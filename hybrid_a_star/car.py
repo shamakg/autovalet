@@ -32,16 +32,10 @@ def rot_mat_2d(angle):
     """
     return Rot.from_euler('z', angle).as_matrix()[0:2, 0:2]
 
-# WB = 3  # rear to front wheel
-# W = 2.0  # width of car
-# LF = 3.75  # distance from rear to vehicle front end
-# LB = .977  # distance from rear to vehicle back end
-# MAX_STEER = 0.5  # [rad] maximum steering angle
-
-WB = 2.93  # rear to front wheel
-W = 2.18  # width of car
-LF = 3.856  # distance from rear to vehicle front end
-LB = 1.045  # distance from rear to vehicle back end
+WB = 3  # rear to front wheel
+W = 2.0  # width of car
+LF = 3.5  # distance from rear to vehicle front end
+LB = .977  # distance from rear to vehicle back end
 MAX_STEER = 0.5  # [rad] maximum steering angle
 
 BUBBLE_DIST = (LF - LB) / 2.0  # distance from rear to center of vehicle.
@@ -117,7 +111,8 @@ def pi_2_pi(angle):
 def move(x, y, yaw, distance, steer, L=WB):
     x += distance * cos(yaw)
     y += distance * sin(yaw)
-    yaw += pi_2_pi(distance * tan(steer) / L)  # distance/2
+    ## SHAMAK: should this be = or +=
+    yaw = pi_2_pi(yaw + distance * tan(steer) / L)
 
     return x, y, yaw
 

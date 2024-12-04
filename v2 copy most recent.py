@@ -33,7 +33,7 @@ FAILURE_HISTORY_LENGTH = 200
 FAILURE_THRESHOLD = 0.1
 MAX_CROSSING_WAIT = 3.0
 COLLISION_REPLAN_DEBOUNCE = 1.0  # seconds between collision-triggered replans
-POSITION_NOISE_STD = 0.5
+POSITION_NOISE_STD = 0.15
 DYN_OBS_PADDING_CELLS = 3  # inflate dynamic obstacles by N×0.25m = 0.75m clearance
 
 STOP_CONTROL = carla.VehicleControl(brake=1.0)
@@ -85,7 +85,6 @@ def plot_trajectory(trajectory):
     ax.grid(True)
     plt.savefig('test.png')
 
-
 class TrajectoryPoint():
     def __init__(self, direction: Direction, x: float, y: float, speed: float, angle: float):
         self.direction = direction
@@ -134,14 +133,9 @@ class ObstacleMap():
     def probs(self):
         return 1 - (1 / (1 + np.exp(self.obs)))
     
-    def generate_collision_mask(self, trajectory: TrajectoryPoint | list[TrajectoryPoint],
-                                front_m=3.856, rear_m=1.045, half_width_m=1.09):
+    def generate_collision_mask(self, trajectory: TrajectoryPoint | list[TrajectoryPoint]):
         mask = np.zeros_like(self.obs, dtype=bool)
         x_coords, y_coords = np.meshgrid(np.arange(self.obs.shape[0]), np.arange(self.obs.shape[1]))
-
-        rear_distance  = rear_m      / 0.25
-        front_distance = front_m     / 0.25
-        width          = half_width_m * 2 / 0.25
 
         for wp in trajectory[:min(10, len(trajectory)-TRAJECTORY_EXTENSION):2] if isinstance(trajectory, list) else [trajectory]:
             x, y = self.transform_coord(wp.x, wp.y)
@@ -151,36 +145,23 @@ class ObstacleMap():
             ])
             coords = np.stack([x_coords.flatten() - x, y_coords.flatten() - y])
             rotated = R @ coords
-            hits = (rotated[0] >= -rear_distance) & (rotated[0] <= front_distance) \
-                 & (rotated[1] >= -width/2)       & (rotated[1] <= width/2)
+            rear_distance = 1.045 * 4
+            front_distance = 3.856 * 4
+            width = 2.18 * 4
+            hits = (rotated[0] >= -rear_distance) & (rotated[0] <= front_distance) & (rotated[1] >= -width/2) & (rotated[1] <= width/2)
             mask |= hits.reshape(self.obs.shape[1], self.obs.shape[0]).T
 
         return mask
 
-    def check_collision(self, trajectory: list[TrajectoryPoint],
-                        front_m=3.856, rear_m=1.045, half_width_m=1.09):
+    def check_collision(self, trajectory: list[TrajectoryPoint]):
         probs = self.probs()
-        mask = self.generate_collision_mask(trajectory, front_m=front_m, rear_m=rear_m, half_width_m=half_width_m)
-        # robs = np.zeros_like(probs)
-        # robs[mask & (probs > 0.5)] = 1
-        # robs = robs[::-1]
-        # plt.cla()
-        # plt.imshow(robs, cmap='gray', vmin=0, vmax=1)
-        # plt.savefig('obs_map2.png')
-
-        # robs = np.zeros_like(probs)
-        # robs[mask | (probs > 0.5)] = 1
-        # robs = robs[::-1]
-        # plt.cla()
-        # plt.imshow(robs, cmap='gray', vmin=0, vmax=1)
-        # plt.savefig('obs_map3.png')
+        mask = self.generate_collision_mask(trajectory)
         return np.any(probs[mask] > 0.5)
 
-    def check_static_collision(self, trajectory: list[TrajectoryPoint],
-                               front_m=3.856, rear_m=1.045, half_width_m=1.09):
+    def check_static_collision(self, trajectory: list[TrajectoryPoint]):
         """Check collision against static obstacles only (ignores dynamic obstacles)."""
         probs = 1 - (1 / (1 + np.exp(self.static_obs)))
-        mask = self.generate_collision_mask(trajectory, front_m=front_m, rear_m=rear_m, half_width_m=half_width_m)
+        mask = self.generate_collision_mask(trajectory)
         return np.any(probs[mask] > 0.5)
 
 def obstacle_map_from_bbs(bbs):
@@ -334,22 +315,9 @@ class CarlaCollisionSensor():
         self.actor = actor
         self.world = world
         self.has_collided = False
-        self.vehicle_hit = False
-        collision_bp = world.get_blueprint_library().find('sensor.other.collision')
-        sensor = world.spawn_actor(collision_bp, carla.Transform(), attach_to=actor)
-        sensor.listen(self._on_collision)
-        self._sensor = sensor
-
-    def _on_collision(self, event):
-        other = event.other_actor
-        tid = other.type_id
-        if tid.startswith('vehicle.') or tid.startswith('static.prop'):
-            self.vehicle_hit = True
-            self.has_collided = True
-
-    def destroy(self):
-        if hasattr(self, '_sensor') and self._sensor.is_alive:
-            self._sensor.destroy()
+        # collision_bp = world.get_blueprint_library().find('sensor.other.collision')
+        # sensor = world.spawn_actor(collision_bp, carla.Transform(), attach_to=actor)
+        # sensor.listen(self.on_collision)
 
 class CarlaCar():
     def __init__(self, world, blueprint, spawn_point, destination, destination_bb, debug=False):
@@ -359,13 +327,6 @@ class CarlaCar():
         self.time_sensor = CarlaTimeSensor(self.world)
         self.collision_sensor = CarlaCollisionSensor(self.actor, self.world)
         self.car = Car((destination.x, destination.y), self.gnss_sensor, self.time_sensor, self.collision_sensor, self.world)
-        # Override Car dims with actual actor bounding box.
-        # car.cur is 1.6m behind the actor origin (localize calls offset(-1)),
-        # so we add/subtract that offset when converting extent → cur-relative distances.
-        bb = self.actor.bounding_box
-        self.car.front_m      = bb.extent.x + bb.location.x + 1.6
-        self.car.rear_m       = max(0.1, bb.extent.x - bb.location.x - 1.6)
-        self.car.half_width_m = bb.extent.y
         self.destination_bb = destination_bb
         self.recording_file = None
         self.has_recorded_segment = False
@@ -447,7 +408,6 @@ class CarlaCar():
             self.world.debug.draw_string(carla.Location(x=loc.x, y=loc.y), 'o', draw_shadow=False, color=color, life_time=1.0, persistent_lines=True)
 
     def destroy(self):
-        self.collision_sensor.destroy()
         self.actor.destroy()
 
     def iou(self):
@@ -526,17 +486,10 @@ class Car():
         self._last_collision_replan_time = -COLLISION_REPLAN_DEBOUNCE
 
         self.last_perception_time = -float('inf')
-        # Ego vehicle dimensions (metres); overridden by CarlaCar from actual bounding box
-        self.front_m      = 3.856
-        self.rear_m       = 1.045
-        self.half_width_m = 1.09
 
     def calculate_critical_time(self):
         probs = self.obs.probs()
-        collision_mask = self.obs.generate_collision_mask(
-            self.trajectory[self.ti:],
-            front_m=self.front_m, rear_m=self.rear_m, half_width_m=self.half_width_m,
-        )
+        collision_mask = self.obs.generate_collision_mask(self.trajectory[self.ti:])
         cur_x = self.cur.x
         cur_y = self.cur.y
         inner_radius = 3
@@ -638,16 +591,12 @@ class Car():
     def plan(self):
         cur = self.cur
         destination = self.destination
+        distance_to_destination = cur.distance(destination)
 
         trajectory = self.trajectory
-
-        ### do we need to extend/fix the current trajectory
         should_extend = len(trajectory) == 0
         should_fix = len(trajectory) > 0 and cur.distance(trajectory[self.ti]) > REPLAN_THRESHOLD
-        has_collision = self.obs.check_collision(
-            trajectory[self.ti:],
-            front_m=self.front_m, rear_m=self.rear_m, half_width_m=self.half_width_m,
-        ) if len(trajectory) > 0 else False
+        has_collision = self.obs.check_collision(trajectory[self.ti:]) if len(trajectory) > 0 else False
 
         has_dynamic_crossing = False
         if len(trajectory) > 0:
@@ -681,9 +630,7 @@ class Car():
             # running the expensive hybrid A* planner — the obstacle will move on its own.
             skip_replan_for_dynamic = False
             if effective_has_collision and not should_extend and not should_fix and not has_stagnated:
-                if not self.obs.check_static_collision(
-                        trajectory[self.ti:],
-                        front_m=self.front_m, rear_m=self.rear_m, half_width_m=self.half_width_m):
+                if not self.obs.check_static_collision(trajectory[self.ti:]):
                     # Only wait for obstacles that are actually moving; stationary dynamic
                     # obstacles (pedestrians not yet crossing) should be planned around.
                     moving = any(
@@ -928,7 +875,7 @@ class Car():
                                 [0, 1, 0, 0]
                             ], dtype=float),
                             transition_covariance=0.1 * np.eye(4),
-                            observation_covariance=POSITION_NOISE_STD**2 * np.eye(2),
+                            observation_covariance=0.05 * np.eye(2),
                             initial_state_mean=initial_state_mean,
                             initial_state_covariance=initial_state_covariance
                         ),
@@ -972,13 +919,13 @@ class Car():
                             [0, 0, 0, 1]
                         ]), current_state)
 
-                        for point in kf_data['cluster_points']:
-                            x, y = self.obs.transform_coord(
-                                point[0] - original_centroid[0] + current_state[0],
-                                point[1] - original_centroid[1] + current_state[1]
-                            )
-                            if 0 <= x < self.obs.obs.shape[0] and 0 <= y < self.obs.obs.shape[1]:
-                                dyn_obs[x, y] = np.log(0.75 / (1 - 0.75))
+                for point in kf_data['cluster_points']:
+                    x, y = self.obs.transform_coord(
+                        point[0] - original_centroid[0] + current_state[0],
+                        point[1] - original_centroid[1] + current_state[1]
+                    )
+                    if 0 <= x < self.obs.obs.shape[0] and 0 <= y < self.obs.obs.shape[1]:
+                        dyn_obs[x, y] = np.log(0.75 / (1 - 0.75))
 
         self.obs.obs = self.obs.static_obs + dyn_obs
 
@@ -1009,13 +956,13 @@ class Car():
                         [0, 0, 0, 1]
                     ]), current_state)
 
-                    for point in kf_data['cluster_points']:
-                        x, y = self.obs.transform_coord(
-                            point[0] - original_centroid[0] + current_state[0],
-                            point[1] - original_centroid[1] + current_state[1]
-                        )
-                        if 0 <= x < self.obs.obs.shape[0] and 0 <= y < self.obs.obs.shape[1]:
-                            dyn_obs[x, y] = np.log(0.75 / (1 - 0.75))
+            for point in kf_data['cluster_points']:
+                x, y = self.obs.transform_coord(
+                    point[0] - original_centroid[0] + current_state[0],
+                    point[1] - original_centroid[1] + current_state[1]
+                )
+                if 0 <= x < self.obs.obs.shape[0] and 0 <= y < self.obs.obs.shape[1]:
+                    dyn_obs[x, y] = np.log(0.75 / (1 - 0.75))
         self.obs.obs = self.obs.static_obs + dyn_obs
     def _dynamic_crossing_time_check(self, horizon_pts=20, safety_time=0.7):
         """

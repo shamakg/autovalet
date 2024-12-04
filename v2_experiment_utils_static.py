@@ -9,7 +9,8 @@ from parking_position import (
     player_location_Town04,
     town04_bound 
 )
-from v2 import CarlaCar, Mode, ObstacleMap
+from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+from v2_static import CarlaCar, Mode, ObstacleMap
 
 HOST = 'host.docker.internal'
 PORT = 2000
@@ -92,6 +93,7 @@ def town04_spawn_parked_cars(world, spawn_points, skip, num_random_cars):
         spawn_point = parking_vehicle_locations_Town04[i]
         npc_transform = carla.Transform(spawn_point, rotation=random.choice(parking_vehicle_rotation))
         npc_bp = random.choice(blueprints)
+        
         if npc_bp.has_attribute('color'):
             color = random.choice(npc_bp.get_attribute('color').recommended_values)
             npc_bp.set_attribute('color', color)
@@ -99,10 +101,8 @@ def town04_spawn_parked_cars(world, spawn_points, skip, num_random_cars):
         if npc is None:
             parked_cars_and_spots_bbs.append(approximate_bb_from_center(spawn_point))
             continue
-        npc.set_simulate_physics(True)
-        physics_control = npc.get_physics_control()
-        physics_control.mass = 100000
-        npc.apply_physics_control(physics_control)
+        CarlaDataProvider.register_actor(npc)
+        npc.set_simulate_physics(False)
         parked_cars.append(npc)
         bb = [
             spawn_point.x - npc.bounding_box.extent.x, spawn_point.y - npc.bounding_box.extent.y,
@@ -290,7 +290,7 @@ def get_bounding_boxes(parking_scenario, debug = True, life_time = 1):
             continue
 
         bbox = oriented_bbox(walker, walker.bounding_box)
-        moving_cars_bbs.append(bbox)
+        walker_bbs.append((walker.id, bbox))
         _draw_bb(world, bbox, carla.Color(0, 0, 255), life_time)
 
     return moving_cars_bbs, traffic_cone_bbs, walker_bbs

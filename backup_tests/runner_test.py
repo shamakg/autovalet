@@ -1,3 +1,4 @@
+from srunner.scenariomanager.actorcontrols.pedestrian_control import PedestrianControl
 from v2_experiment_utils import (
     load_client,
     is_done,
@@ -14,52 +15,55 @@ from parking_position import (
     parking_lane_waypoints_Town04
 )
 
+import carla
+
 import numpy as np
 import matplotlib.pyplot as plt
 import imageio.v3 as iio
 
-SCENARIOS = [
-    (17, [16, 18]),
-    (18, [17, 19]),
-    (19, [18, 20]),
-    (20, [19, 21]),
-    (21, [20, 22]),
-    (22, [21, 23]),
-    (23, [22, 24]),
-    (24, [23, 25]),
-    (25, [24, 26]),
-    (26, [25, 27]),
-    (27, [26, 28]),
-    (28, [27, 29]),
-    (29, [28, 30]),
-    (30, [29, 31]),
-    (31, [30, 32]),
-    (32, [31, 33]),
-    (33, [32, 34]),
-    (34, [33, 35]),
-    (35, [34, 36]),
-    (36, [35, 37]),
-    (37, [36, 38]),
-    (38, [37, 39]),
-    (39, [38, 40]),
-    (40, [39, 41]),
-    (41, [40, 42]),
-    (42, [41, 43]),
-    (43, [42, 44]),
-    (44, [43, 45]),
-    (45, [44, 46]),
-    (46, [45, 47]),
-    (47, [46, 48]),
-]
+from srunner.scenariomanager.actorcontrols.basic_control import BasicControl
+import random
+
+from v2_experiment import SCENARIOS
 NUM_RANDOM_CARS = 25
 
+def spawn_pedestrian(world, start_location, end_location, velocity = 1.5):
+    # inspired by pedestrian_crossing scenario
+
+    blueprint_library = world.get_blueprint_library()
+    pedestrian_bp = blueprint_library.filter('walker.pedestrian.*')[0]
+
+    spawn_point = carla.Transform(start_location, carla.Rotation(yaw=90))
+    pedestrian = world.spawn_actor(pedestrian_bp, spawn_point)
+
+    pedestrian.set_simulate_physics(True)
+
+    # pedestrian.set_target_velocity(velocity)
+
+    controller = PedestrianControl(pedestrian)
+    end_waypoint = carla.Transform(
+        carla.Location(x=end_location.x, y=end_location.y, z=end_location.z),
+        carla.Rotation()
+    )
+
+    controller.update_target_speed(1.5)
+    controller.update_waypoints([end_waypoint]) 
+
+    return pedestrian, controller
+
 def run_scenario(world, destination_parking_spot, parked_spots, ious, recording_file):
+    pedestrians = []
+    pedestrian_controllers = []
     try:
         # load parked cars
         parked_cars, parked_cars_bbs = town04_spawn_parked_cars(world, parked_spots, destination_parking_spot, NUM_RANDOM_CARS)
 
         # load car
         car = town04_spawn_ego_vehicle(world, destination_parking_spot)
+        
+        world.tick()
+        world.tick()
+
         recording_cam = car.init_recording(recording_file)
 
         # HACK: enable perfect perception of parked cars
@@ -68,12 +72,34 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, recording_
         # HACK: set lane waypoints to guide parking in adjacent lanes
         car.car.lane_wps = parking_lane_waypoints_Town04
 
+        # pedestrian, ped_controller = spawn_pedestrian(world, ped_start_location, ped_end_location)
+        # pedestrians.append(pedestrian)
+    
+        
+        # DEBUG: Draw marker
+        # world.debug.draw_point(start_location, size=0.5, color=carla.Color(255, 0, 0), life_time=120.0)
+        # world.debug.draw_string(start_location, 'PEDESTRIAN', color=carla.Color(255, 0, 0), life_time=120.0)
+        num_pedestrians = random.randint(4,15)
+        spawn_times = [random.randint(0, 500) for _ in range(num_pedestrians)]
+        ped_controller = None
         # run simulation
         i = 0
         while not is_done(car):
             world.tick()
             car.run_step()
+            
             car.process_recording_frames()
+            if (i in spawn_times):
+                ego_location = car.actor.get_location()
+                ped_start_location = carla.Location(ego_location.x - 5, ego_location.y + 10, ego_location.z+1)
+                ped_end_location = carla.Location(ego_location.x + 2, ego_location.y + 10, ego_location.z+1)
+                pedestrian, ped_controller = spawn_pedestrian(world, ped_start_location, ped_end_location)
+                pedestrians.append(pedestrian)
+                pedestrian_controllers.append(ped_controller)
+            for controller in pedestrian_controllers:
+                controller.run_step()
+            i += 1
+            
             # town04_spectator_follow(world, car)
 
         iou = car.iou()
@@ -82,6 +108,11 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, recording_
     finally:
         recording_cam.destroy()
         car.destroy()
+
+        for pedestrian in pedestrians:
+            if pedestrian.is_alive:
+                pedestrian.destroy()
+
         for parked_car in parked_cars:
             parked_car.destroy()
 

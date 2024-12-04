@@ -8,7 +8,11 @@
 from collections import deque
 import math
 import numpy as np
+
 import carla
+from numpy import arctan2
+
+np.atan2 = arctan2 ## numpy fix - SHAMAK
 
 def get_speed(vel):
     """
@@ -223,8 +227,8 @@ class PIDLateralController:
             :param vehicle_transform: current transform of the vehicle
             :return: steering control in the range [-1, 1]
         """
-        alpha = np.arctan2(wp.y - cur.y, wp.x - cur.x) - cur.angle
-        delta = np.arctan2(2.0 * 3.0 * np.sin(alpha), np.sqrt((wp.x - cur.x) ** 2 + (wp.y - cur.y) ** 2))
+        alpha = np.atan2(wp.y - cur.y, wp.x - cur.x) - cur.angle
+        delta = np.atan2(2.0 * 3.0 * np.sin(alpha), np.sqrt((wp.x - cur.x) ** 2 + (wp.y - cur.y) ** 2))
 
         max_angle = np.deg2rad(70)
         delta = np.clip(delta, -max_angle, max_angle)

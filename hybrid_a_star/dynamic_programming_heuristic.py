@@ -127,7 +127,7 @@ def verify_node(node, obstacle_map, min_x, min_y, max_x, max_y):
     elif node.y >= max_y:
         return False
 
-    if obstacle_map[node.x][node.y]:
+    if obstacle_map[node.x - min_x][node.y - min_y]:
         return False
 
     return True
