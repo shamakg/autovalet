@@ -7,8 +7,10 @@ import carla
 import numpy as np
 import matplotlib.pyplot as plt
 from shapely.geometry import Polygon
-import cv2
+from sklearn.cluster import DBSCAN
+from scipy.spatial.distance import cdist
 from scipy.spatial.transform import Rotation
+from pykalman import KalmanFilter
 from hybrid_a_star.hybrid_a_star import hybrid_a_star_planning as hybrid_a_star
 from fisheye_camera import FisheyeCamera, EquidistantProjection 
 from v2_perception import run_perception_model
@@ -61,6 +63,10 @@ class ObstacleMap():
         self.min_x = min_x
         self.min_y = min_y
         self.obs = obs
+        self.static_obs = obs.copy()
+        self.dyn_obs_clusters = {}
+        self.dyn_obs_states = {}
+        self.dyn_obs_kfs = {}
 
     def transform_coord(self, x: float, y: float):
         x = int((x - self.min_x) / 0.25)
@@ -85,11 +91,11 @@ class ObstacleMap():
     def probs(self):
         return 1 - (1 / (1 + np.exp(self.obs)))
     
-    def generate_collision_mask(self, trajectory: list[TrajectoryPoint], probs: np.array):
-        mask = np.zeros_like(probs, dtype=bool)
-        x_coords, y_coords = np.meshgrid(np.arange(probs.shape[0]), np.arange(probs.shape[1]))
+    def generate_collision_mask(self, trajectory: TrajectoryPoint | list[TrajectoryPoint]):
+        mask = np.zeros_like(self.obs, dtype=bool)
+        x_coords, y_coords = np.meshgrid(np.arange(self.obs.shape[0]), np.arange(self.obs.shape[1]))
 
-        for wp in trajectory[:min(10, len(trajectory)-TRAJECTORY_EXTENSION):2]:
+        for wp in trajectory[:min(10, len(trajectory)-TRAJECTORY_EXTENSION):2] if isinstance(trajectory, list) else [trajectory]:
             x, y = self.transform_coord(wp.x, wp.y)
             R = np.array([
                 [np.cos(-wp.angle), -np.sin(-wp.angle)],
@@ -101,13 +107,13 @@ class ObstacleMap():
             front_distance = 3.856 * 4
             width = 2.18 * 4
             hits = (rotated[0] >= -rear_distance) & (rotated[0] <= front_distance) & (rotated[1] >= -width/2) & (rotated[1] <= width/2)
-            mask |= hits.reshape(probs.shape[1], probs.shape[0]).T
+            mask |= hits.reshape(self.obs.shape[1], self.obs.shape[0]).T
 
         return mask
 
     def check_collision(self, trajectory: list[TrajectoryPoint]):
         probs = self.probs()
-        mask = self.generate_collision_mask(trajectory, probs)
+        mask = self.generate_collision_mask(trajectory)
         # robs = np.zeros_like(probs)
         # robs[mask & (probs > 0.5)] = 1
         # robs = robs[::-1]
@@ -215,6 +221,13 @@ def plan_hybrid_a_star(cur: TrajectoryPoint, destination: TrajectoryPoint, obs: 
     
     return trajectory
 
+class CarlaTimeSensor():
+    def __init__(self, world):
+        self.world = world
+
+    def get_time(self):
+        return self.world.get_snapshot().timestamp.elapsed_seconds
+
 # TODO: get data from actual GNSS sensor instead of getting
 # perfect vehicle data from CARLA
 class CarlaGnssSensor():
@@ -279,23 +292,22 @@ class CarlaCameraSensor():
 
 class CarlaCollisionSensor():
     def __init__(self, actor, world):
+        self.actor = actor
+        self.world = world
         self.has_collided = False
         # collision_bp = world.get_blueprint_library().find('sensor.other.collision')
         # sensor = world.spawn_actor(collision_bp, carla.Transform(), attach_to=actor)
         # sensor.listen(self.on_collision)
 
-    def on_collision(self):
-        print('collision')
-        self.has_collided = True
-
 class CarlaCar():
     def __init__(self, world, blueprint, spawn_point, destination, destination_bb, debug=False):
         self.world = world
         self.actor = world.spawn_actor(blueprint, spawn_point)
+        self.time_sensor = CarlaTimeSensor(world)
         self.gnss_sensor = CarlaGnssSensor(self.actor)
         self.camera_sensor = CarlaCameraSensor(self.actor, world)
         self.collision_sensor = CarlaCollisionSensor(self.actor, world)
-        self.car = Car((destination.x, destination.y), self.gnss_sensor, self.camera_sensor, self.collision_sensor)
+        self.car = Car((destination.x, destination.y), self.time_sensor, self.gnss_sensor, self.camera_sensor, self.collision_sensor)
         self.destination_bb = destination_bb
 
         self.debug = debug
@@ -368,23 +380,25 @@ class CarlaCar():
         return iou
 
 class Car():
-    def __init__(self, destination: Tuple[float, float], gnss_sensor: CarlaGnssSensor, camera_sensor: CarlaCameraSensor, collision_sensor: CarlaCollisionSensor):
+    def __init__(self, destination: Tuple[float, float], time_sensor: CarlaTimeSensor, gnss_sensor: CarlaGnssSensor, camera_sensor: CarlaCameraSensor, collision_sensor: CarlaCollisionSensor):
         self.cur = TrajectoryPoint(Direction.FORWARD, 0, 0, 0, 0)
         self.stagnation_history = []
         self.failure_history = []
         self.obs: ObstacleMap = []
         self.destination = TrajectoryPoint(Direction.FORWARD, destination[0], destination[1], MIN_SPEED, 0).offset(-1)
         self.controller = VehiclePIDController({'K_P': 2, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.05}, {'K_P': 0.5, 'K_I': 0.05, 'K_D': 0.0, 'dt': 0.05})
+        self.time_sensor = time_sensor
         self.gnss_sensor = gnss_sensor
         self.camera_sensor = camera_sensor
         self.collision_sensor = collision_sensor
         self.trajectory: list[TrajectoryPoint] = []
         self.ti = 0
         self.mode = Mode.DRIVING
+        self.time = 0
     
     def calculate_critical_time(self):
         probs = self.obs.probs()
-        collision_mask = self.obs.generate_collision_mask(self.trajectory[self.ti:], probs)
+        collision_mask = self.obs.generate_collision_mask(self.trajectory[self.ti:])
         cur_x = self.cur.x
         cur_y = self.cur.y
         inner_radius = 3
@@ -411,6 +425,7 @@ class Car():
             self.stagnation_history.pop(0)
         if len(self.failure_history) > FAILURE_HISTORY_LENGTH:
             self.failure_history.pop(0)
+        self.time = self.time_sensor.get_time()
         self.cur.x, self.cur.y = self.gnss_sensor.get_location()
         self.cur.speed = self.gnss_sensor.get_speed()
         self.cur.angle = self.gnss_sensor.get_heading()
@@ -430,8 +445,9 @@ class Car():
         ]
         occ = run_perception_model(cur_x, -cur_y, -cur_angle, imgnps)
         if occ is not None:
+            # static updates
             updates = np.zeros_like(self.obs.obs)
-            # occluded = np.zeros_like(self.obs.obs, dtype=bool)
+            dyn_points = []
             radius = 9
             inner_radius = 3
             mask = self.obs.circular_mask(cur_x, cur_y, radius)
@@ -450,25 +466,11 @@ class Car():
                 x, y = self.obs.transform_coord(absolute_point[0], absolute_point[1])
                 if 0 <= x < len(updates) and 0 <= y < len(updates[0]):
                     if point[-1] == 9: # vehicle
-                        updates[x][y] += np.log(0.53 / (1 - 0.53))
+                        updates[x][y] += np.log(0.55 / (1 - 0.55))
+                    elif point[-1] == 8: # dynamic obstacle
+                        dyn_points.append(absolute_point)
                     else:
-                        updates[x][y] += np.log(0.53 / (1 - 0.53))
-                    # dir_vec = rotated_point / np.linalg.norm(rotated_point)
-                    # for dist in range(0, radius*4):
-                    #     occ_x, occ_y = self.obs.transform_coord(
-                    #         absolute_point[0] + dir_vec[0] * dist / 4,
-                    #         absolute_point[1] + dir_vec[1] * dist / 4
-                    #     )
-                    #     if 0 <= occ_x < len(occluded) and 0 <= occ_y < len(occluded[0]):
-                    #         occluded[occ_x][occ_y] = True
-                    # # padding
-                    # for i in range(-1, 2):
-                    #     for j in range(-1, 2):
-                    #         if 0 <= x + i < len(updates) and 0 <= y + j < len(updates[0]):
-                    #             updates[x+i][y+j] += np.log(0.55 / (1 - 0.55))
-            # updates *= 0.5
-            # updates = np.clip(updates, 0, 1)
-            # updates[mask & ~occluded] = np.log(0.45 / (1 - 0.45))
+                        updates[x][y] += np.log(0.55 / (1 - 0.55))
             for x, y in zip(*np.where(mask)):
                 cell_point = np.array(self.obs.inverse_transform_coord(x, y)) - np.array([cur_x, cur_y])
                 distance = np.linalg.norm(cell_point)
@@ -476,8 +478,161 @@ class Car():
                 if updates[x][y] == 0:
                     updates[x][y] = np.log(0.45 / (1 - 0.45))
                 updates[x][y] *= distance_weight
-            self.obs.obs += updates
-            # self.obs.obs = np.maximum(-5, self.obs.obs)
+            self.obs.static_obs += updates
+
+            # dynamic updates
+            dyn_points = np.array(dyn_points)
+            if len(dyn_points) > 0:
+                clustering = DBSCAN(eps=1.0, min_samples=3).fit(dyn_points)
+                clustering_labels = clustering.labels_
+                unique_clustering_labels = set(clustering_labels) - {-1}
+                cluster_points_list = []
+                cluster_centroids = []
+                for label in unique_clustering_labels:
+                    cluster_points = dyn_points[clustering_labels == label]
+                    cluster_points_list.append(cluster_points)
+                    cluster_centroids.append(np.mean(cluster_points, axis=0))
+                prev_ids = list(self.obs.dyn_obs_clusters.keys())
+                prev_cluster_centroids = [self.obs.dyn_obs_clusters[prev_id][0] for prev_id in prev_ids]
+                obj_assignments = {}
+                if len(cluster_centroids) > 0 and len(prev_cluster_centroids) > 0:
+                    distances = cdist(cluster_centroids, prev_cluster_centroids)
+                    for i in range(len(cluster_centroids)):
+                        min_dist_i = np.argmin(distances[i])
+                        if distances[i, min_dist_i] < 1.0:
+                            obj_id = prev_ids[min_dist_i]
+                            obj_assignments[obj_id] = i
+                            dt = self.time - self.obs.dyn_obs_clusters[obj_id][2]
+                            self.obs.dyn_obs_clusters[obj_id] = (cluster_centroids[i], cluster_points_list[i], self.time)
+                            filtered_state_mean, filtered_state_covariance = self.obs.dyn_obs_states[obj_id]
+                            self.obs.dyn_obs_states[obj_id] = self.obs.dyn_obs_kfs[obj_id].filter_update(
+                                filtered_state_mean=filtered_state_mean,
+                                filtered_state_covariance=filtered_state_covariance,
+                                observation=cluster_centroids[i],
+                                transition_matrix=np.array([
+                                    [1, 0, dt, 0],
+                                    [0, 1, 0, dt],
+                                    [0, 0, 1, 0],
+                                    [0, 0, 0, 1]
+                                ]),
+                                transition_offset=np.array([0, 0, 0, 0]),
+                                observation_offset=np.array([0, 0])
+                            )
+                        else:
+                            obj_id = len(self.obs.dyn_obs_clusters)
+                            obj_assignments[obj_id] = i
+                            self.obs.dyn_obs_clusters[obj_id] = (cluster_centroids[i], cluster_points_list[i], self.time)
+                            initial_state_mean, initial_state_covariance = self.obs.dyn_obs_states[obj_id] = (
+                                np.array([cluster_centroids[i][0], cluster_centroids[i][1], 0, 0]),
+                                1.0 * np.eye(4)
+                            )
+                            self.obs.dyn_obs_kfs[obj_id] = KalmanFilter(
+                                transition_matrices=np.array([
+                                    [1, 0, 2, 0],
+                                    [0, 1, 0, 2],
+                                    [0, 0, 1, 0],
+                                    [0, 0, 0, 1]
+                                ]),
+                                observation_matrices=np.array([
+                                    [1, 0, 0, 0],
+                                    [0, 1, 0, 0]
+                                ]),
+                                transition_covariance=0.1 * np.eye(4),
+                                observation_covariance=0.05 * np.eye(2),
+                                initial_state_mean=initial_state_mean,
+                                initial_state_covariance=initial_state_covariance
+                            )
+
+                    # for prev_id in prev_ids:
+                    #     last_time = self.obs.dyn_obs_history[prev_id][-1][1]
+                    #     if self.time - last_time > 5.0:
+                    #         del self.obs.dyn_obs_history[prev_id]
+                    #         del self.obs.dyn_obs_kfs[prev_id]
+                else:
+                    for i in range(len(cluster_centroids)):
+                        obj_id = len(self.obs.dyn_obs_clusters)
+                        obj_assignments[obj_id] = i
+                        # self.obs.dyn_obs_history[obj_id] = [(cluster_centroids[i], self.time)]
+                        self.obs.dyn_obs_clusters[obj_id] = (cluster_centroids[i], cluster_points_list[i], self.time)
+                        initial_state_mean, initial_state_covariance = self.obs.dyn_obs_states[obj_id] = (
+                            np.array([cluster_centroids[i][0], cluster_centroids[i][1], 0, 0]),
+                            1.0 * np.eye(4)
+                        )
+                        self.obs.dyn_obs_kfs[obj_id] = KalmanFilter(
+                            transition_matrices=np.array([
+                                [1, 0, 2, 0],
+                                [0, 1, 0, 2],
+                                [0, 0, 1, 0],
+                                [0, 0, 0, 1]
+                            ]),
+                            observation_matrices=np.array([
+                                [1, 0, 0, 0],
+                                [0, 1, 0, 0]
+                            ]),
+                            transition_covariance=0.1 * np.eye(4),
+                            observation_covariance=0.05 * np.eye(2),
+                            initial_state_mean=initial_state_mean,
+                            initial_state_covariance=initial_state_covariance
+                        )
+
+            dyn_obs = np.zeros_like(self.obs.obs)
+            obj_ids_to_delete = []
+            for obj_id in self.obs.dyn_obs_clusters:
+                state_mean, _ = self.obs.dyn_obs_states[obj_id]
+                original_centroid = self.obs.dyn_obs_clusters[obj_id][0]
+                original_time = self.obs.dyn_obs_clusters[obj_id][2]
+                if self.time - original_time > 2.0:
+                    obj_ids_to_delete.append(obj_id)
+                    continue
+                for _ in range(int((self.time - original_time)*5 + 10)):
+                    state_mean = np.dot(np.array([
+                        [1, 0, 0.2, 0],
+                        [0, 1, 0, 0.2],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 1]
+                    ]), state_mean)
+                    for point in self.obs.dyn_obs_clusters[obj_id][1]:
+                        x, y = self.obs.transform_coord(point[0] - original_centroid[0] + state_mean[0], point[1] - original_centroid[1] + state_mean[1])
+                        if 0 <= x < self.obs.obs.shape[0] and 0 <= y < self.obs.obs.shape[1]:
+                            self.obs.static_obs[x, y] = 0
+                            dyn_obs[x, y] = np.log(0.75 / (1 - 0.75))
+
+            for obj_id in obj_ids_to_delete:
+                del self.obs.dyn_obs_clusters[obj_id]
+                del self.obs.dyn_obs_states[obj_id]
+                del self.obs.dyn_obs_kfs[obj_id]
+            
+            # combine static and dynamic obstacles
+            dyn_obs[self.obs.generate_collision_mask(TrajectoryPoint(Direction.FORWARD, cur_x, cur_y, 0, cur_angle))] = 0
+            self.obs.obs = self.obs.static_obs + dyn_obs
+
+                # visualize obj_assignments, which maps obj_id to cluster index
+                # for obj_id, kf in self.obs.dyn_obs_states.items():
+                #     state = kf[0]
+                #     print(f"Object {obj_id}: Pos=[{state[0]:.2f}, {state[1]:.2f}], Vel=[{state[2]:.2f}, {state[3]:.2f}]")
+                # plt.cla()
+                # colors = plt.cm.get_cmap("tab10", len(cluster_centroids))
+                # for obj_id, cluster_i in obj_assignments.items():
+                #     cluster_points = cluster_points_list[cluster_i]
+                #     color = colors(cluster_i)
+                #     plt.scatter(cluster_points[:, 1], cluster_points[:, 0], color=color, label=f'obj{obj_id}')
+                #     plt.text(cluster_centroids[cluster_i][1], cluster_centroids[cluster_i][0], f'obj{obj_id}', color=color)
+                # for obj_id, kf in self.obs.dyn_obs_states.items():
+                #     state = kf[0]
+                #     trajectory = [state[:2]]
+                #     for _ in range(5):
+                #         state = np.dot(np.array([
+                #             [1, 0, 0.1, 0],
+                #             [0, 1, 0, 0.1],
+                #             [0, 0, 1, 0],
+                #             [0, 0, 0, 1]
+                #         ]), state)
+                #         trajectory.append(state[:2])
+                #     trajectory = np.array(trajectory)
+                #     plt.plot(trajectory[:, 0], trajectory[:, 1], marker='o', linestyle='-', label=f'Traj {obj_id}')
+                # plt.xlim([100, 300])
+                # plt.ylim([150, 300])
+                # plt.savefig('dyn_occ.png')
         return imgnps, occ
 
     def plan(self):

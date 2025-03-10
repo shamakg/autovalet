@@ -85,7 +85,7 @@ class Event:
         self.data = data
 
 
-def run_scenario(client, destination_parking_spot, parked_spots, latency, ious, locations, accelerations, visualizer):
+def run_scenario(client, destination_parking_spot, parked_spots, latency, ious, locations, accelerations, collisions, visualizer):
     try:
         random.seed(9897105114)
 
@@ -106,7 +106,7 @@ def run_scenario(client, destination_parking_spot, parked_spots, latency, ious, 
 
         # spawn walker
         walkers, walker_bbs = town04_spawn_walkers(world, [
-            # (285, -232),
+            (284, -232),
         ])
 
         # tick world to load actors
@@ -149,6 +149,12 @@ def run_scenario(client, destination_parking_spot, parked_spots, latency, ious, 
             walker_bbs = update_walkers(walkers)
             world.tick()
             car.localize()
+
+            # HACK: manually check for collisions because carla's collision sensor is broken
+            collision_mask = car.car.obs.generate_collision_mask(car.car.cur)
+            ground_truth_obs = obstacle_map_from_bbs(parked_cars_bbs + traffic_cone_bbs + walker_bbs, car.car.obs).obs
+            if np.any(collision_mask & (ground_truth_obs == 1)):
+                collisions[0] += 1
 
             if i % ms_to_ticks(DATA_COLLECTION_PERIOD) == 0:
                 location = car.actor.get_location()
@@ -198,7 +204,7 @@ def run_scenario(client, destination_parking_spot, parked_spots, latency, ious, 
                     recording_imgnps, recording_occ = car.perceive(cur_x, cur_y, cur_angle, imgs)
                     clear_destination_obstacle_map(car.car.obs, destination_parking_spot)
                     recording_obs = car.car.obs.probs().copy()
-                    recording_obs[np.where(obstacle_map_from_bbs(parked_cars_bbs + traffic_cone_bbs + walker_bbs).obs == 1)] = 1
+                    recording_obs[np.where(obstacle_map_from_bbs(parked_cars_bbs + traffic_cone_bbs + walker_bbs, car.car.obs).obs == 1)] = 1
                     recording_obs = recording_obs[::-1]
 
             if i % ms_to_ticks(PLANNING_PERIOD) == 0:
@@ -239,15 +245,17 @@ def main():
             ious = []
             location_lists = []
             acceleration_lists = []
+            collisions = []
             print(f'running scenarios for latency: {latency}ms')
             for destination_parking_spot, parked_spots in SCENARIOS:
                 locations = []
                 accelerations = []
+                collisions_ref = [0]
                 print(f'running scenario: destination={destination_parking_spot}, parked_spots={parked_spots}')
-                run_scenario(client, destination_parking_spot, parked_spots, latency, ious, locations, accelerations, visualizer)
+                run_scenario(client, destination_parking_spot, parked_spots, latency, ious, locations, accelerations, collisions_ref, visualizer)
                 location_lists.append(locations)
                 acceleration_lists.append(accelerations)
-            latency_data.append((latency, ious, location_lists, acceleration_lists))
+            latency_data.append((latency, ious, location_lists, acceleration_lists, collisions))
             
         # scatter ious for each latency value
         # plt.clf()

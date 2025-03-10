@@ -148,7 +148,7 @@ def town04_spawn_walkers(world, spawn_points):
 def update_walkers(walkers):
     walker_bbs = []
     for walker in walkers:
-        walker.apply_control(carla.WalkerControl(direction=carla.Vector3D(y=-1), speed=1))
+        walker.apply_control(carla.WalkerControl(direction=carla.Vector3D(y=-1), speed=0.5))
         walker_location = walker.get_location()
         walker_bb = [
             walker_location.x - walker.bounding_box.extent.x, walker_location.y - walker.bounding_box.extent.y,
@@ -234,7 +234,7 @@ def is_path_drivable(x1, y1, x2, y2, drivable_grid):
     rr, cc = line(y1, x1, y2, x2)  # Generate points on the line between nodes
     return np.all(drivable_grid[rr, cc])  # Check if all points on the line are drivable
 
-def obstacle_map_from_bbs(bbs):
+def obstacle_map_from_bbs(bbs, existing_obs=None):
     obs_min_x = float('inf')
     obs_max_x = float('-inf')
     obs_min_y = float('inf')
@@ -264,13 +264,21 @@ def obstacle_map_from_bbs(bbs):
     obs_max_x += 10
     obs_min_y -= 10
     obs_max_y += 10
-    obs = np.zeros((int((obs_max_x - obs_min_x + 1) / .25), int((obs_max_y - obs_min_y + 1) / .25)), dtype=int)
+
+    if existing_obs is not None:
+        obs_min_x = existing_obs.min_x
+        obs_min_y = existing_obs.min_y
+
+    obs = np.zeros((int((obs_max_x - obs_min_x + 1) / .25), int((obs_max_y - obs_min_y + 1) / .25)), dtype=int) if existing_obs is None else np.zeros_like(existing_obs.obs)
     obs[0, :] = 1
     obs[-1, :] = 1
     obs[:, 0] = 1
     obs[:, -1] = 1
     for x, y in obs_list:
-        obs[int((x - obs_min_x) / .25), int((y - obs_min_y) / .25)] = 1
+        x_coord = int((x - obs_min_x) / .25)
+        y_coord = int((y - obs_min_y) / .25)
+        if x_coord >= 0 and x_coord < obs.shape[0] and y_coord >= 0 and y_coord < obs.shape[1]:
+            obs[x_coord, y_coord] = 1
     
     return ObstacleMap(obs_min_x, obs_min_y, obs)
 
