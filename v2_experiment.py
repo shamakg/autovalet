@@ -33,7 +33,7 @@ SCENARIOS = [
     (20, [19, 21]),
     (21, [20, 22]),
     (22, [21, 23]),
-    # (23, [22, 24]),
+    (23, [22, 24]),
     # (24, [23, 25]),
     # (25, [24, 26]),
     # (26, [25, 27]),
@@ -43,11 +43,11 @@ SCENARIOS = [
     # (30, [29, 31]),
     # (31, [30, 32]),
     # (32, [31, 33]),
-    # (33, [32, 34]),
+    (33, [32, 34]),
     # (34, [33, 35]),
-    # (35, [34, 36]),
-    # (36, [35, 37]),
-    # (37, [36, 38]),
+    (35, [34, 36]),
+    (36, [35, 37]),
+    (37, [36, 38]),
     # (38, [37, 39]),
     # (39, [38, 40]),
     # (40, [39, 41]),
@@ -60,7 +60,7 @@ SCENARIOS = [
     # (47, [46, 48]),
 ]
 NUM_RANDOM_CARS = 50
-NETWORK_SEND_LATENCIES = [0, 100, 200, 400] # ms
+NETWORK_SEND_LATENCIES = [0] # ms
 PERCEPTION_LATENCY = 200 # ms
 SMALL_PERCEPTION_LATENCY = 100 # ms
 RECV_LATENCY = 100 # ms
@@ -68,8 +68,8 @@ MODE_PERIOD = 500 # ms
 PLANNING_PERIOD = 500 # ms
 DATA_COLLECTION_PERIOD = 200 # ms
 SHOULD_PIPELINE = True
-SHOULD_ADJUST_MODEL = True
-TIMEOUT = 90 * 1000 # ms
+SHOULD_ADJUST_MODEL = False
+TIMEOUT = 120 * 1000 # ms
 
 class Mode(Enum):
     NORMAL = 1
@@ -144,6 +144,7 @@ def run_scenario(client, destination_parking_spot, parked_spots, latency, ious, 
         small_perception_delay = ms_to_ticks(latency*0.5 + SMALL_PERCEPTION_LATENCY + recv_latency)
         small_perception_period = ms_to_ticks(max(latency*0.5, SMALL_PERCEPTION_LATENCY, recv_latency)) if SHOULD_PIPELINE else small_perception_delay
         mode = Mode.NORMAL
+        has_collided = False
         # timeline_diagram = TimelineDiagram()
         while not is_done(car):
             walker_bbs = update_walkers(walkers)
@@ -154,7 +155,11 @@ def run_scenario(client, destination_parking_spot, parked_spots, latency, ious, 
             collision_mask = car.car.obs.generate_collision_mask(car.car.cur)
             ground_truth_obs = obstacle_map_from_bbs(parked_cars_bbs + traffic_cone_bbs + walker_bbs, car.car.obs).obs
             if np.any(collision_mask & (ground_truth_obs == 1)):
-                collisions[0] += 1
+                if not has_collided:
+                    collisions[0] += 1
+                has_collided = True
+            else:
+                has_collided = False
 
             if i % ms_to_ticks(DATA_COLLECTION_PERIOD) == 0:
                 location = car.actor.get_location()
@@ -255,6 +260,7 @@ def main():
                 run_scenario(client, destination_parking_spot, parked_spots, latency, ious, locations, accelerations, collisions_ref, visualizer)
                 location_lists.append(locations)
                 acceleration_lists.append(accelerations)
+                collisions.append(collisions_ref[0])
             latency_data.append((latency, ious, location_lists, acceleration_lists, collisions))
             
         # scatter ious for each latency value

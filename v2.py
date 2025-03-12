@@ -35,7 +35,8 @@ FAILURE_THRESHOLD = 0.1
 class Mode(Enum):
     DRIVING = 0
     PARKED = 1
-    FAILED = 2
+    STALLED = 2
+    FAILED = 3
 
 class Direction(Enum):
     FORWARD = 0
@@ -386,6 +387,10 @@ class Car():
         self.failure_history = []
         self.obs: ObstacleMap = []
         self.destination = TrajectoryPoint(Direction.FORWARD, destination[0], destination[1], MIN_SPEED, 0).offset(-1)
+        # HACK: orient correctly
+        if destination[0] < 284:
+            self.destination.angle += np.pi
+            self.destination = self.destination.offset(-2)
         self.controller = VehiclePIDController({'K_P': 2, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.05}, {'K_P': 0.5, 'K_I': 0.05, 'K_D': 0.0, 'dt': 0.05})
         self.time_sensor = time_sensor
         self.gnss_sensor = gnss_sensor
@@ -657,10 +662,12 @@ class Car():
             if has_stagnated: print('stagnated')
             new_trajectory = plan_hybrid_a_star(cur, destination, self.obs)
 
-            if not new_trajectory:
-                destination.angle += np.pi
-                destination = self.destination = destination.offset(-2)
-                new_trajectory = plan_hybrid_a_star(cur, destination, self.obs)
+            # retry with a different angle if the first attempt failed
+            # disabling this for now to control experiment better
+            # if not new_trajectory:
+            #     destination.angle += np.pi
+            #     destination = self.destination = destination.offset(-2)
+            #     new_trajectory = plan_hybrid_a_star(cur, destination, self.obs)
 
             if new_trajectory:
                 for i in range(1, TRAJECTORY_EXTENSION+1):
@@ -668,18 +675,19 @@ class Car():
                 self.ti = 1
                 trajectory = self.trajectory = new_trajectory
                 self.stagnation_history = []
+                self.mode = Mode.DRIVING
             else:
                 self.obs.obs[1:-1, 1:-1] = 0
                 self.ti = 0
                 self.trajectory = []
-                self.plan()
-                # self.mode = Mode.FAILED
+                # self.plan()
+                self.mode = Mode.STALLED
         
         # decay all obstacles except the edges
         # self.obs.obs[1:-1, 1:-1] *= 0.99
     
     def control(self):
-        if self.mode == Mode.FAILED: return STOP_CONTROL
+        if self.mode == Mode.STALLED or self.mode == Mode.FAILED: return STOP_CONTROL
 
         # stop if close to destination
         cur = self.cur
