@@ -79,6 +79,7 @@ def town04_spawn_parked_cars(world, spawn_points, skip, num_random_cars):
     blueprints = [bp for bp in blueprints if bp.id in PARKED_VEHICLES]
     parked_cars = []
     parked_cars_bbs = []
+    parked_cars_and_spots_bbs = []
 
     random_spawn_points = random.sample(range(len(parking_vehicle_locations_Town04)), num_random_cars)
     new_spawn_points = spawn_points.copy()
@@ -96,20 +97,22 @@ def town04_spawn_parked_cars(world, spawn_points, skip, num_random_cars):
             npc_bp.set_attribute('color', color)
         npc = world.try_spawn_actor(npc_bp, npc_transform)
         if npc is None:
-            parked_cars_bbs.append(approximate_bb_from_center(spawn_point))
+            parked_cars_and_spots_bbs.append(approximate_bb_from_center(spawn_point))
             continue
         npc.set_simulate_physics(False)
         parked_cars.append(npc)
-        parked_cars_bbs.append([
+        bb = [
             spawn_point.x - npc.bounding_box.extent.x, spawn_point.y - npc.bounding_box.extent.y,
             spawn_point.x + npc.bounding_box.extent.x, spawn_point.y + npc.bounding_box.extent.y
-        ])
+        ]
+        parked_cars_bbs.append(bb)
+        parked_cars_and_spots_bbs.append(bb)
 
     for i, loc in enumerate(parking_vehicle_locations_Town04):
         if i == skip or i in spawn_points: continue
-        parked_cars_bbs.append(approximate_bb_from_center(loc))
+        parked_cars_and_spots_bbs.append(approximate_bb_from_center(loc))
 
-    return parked_cars, parked_cars_bbs
+    return parked_cars, parked_cars_bbs, parked_cars_and_spots_bbs
 
 def town04_spawn_traffic_cones(world, spawn_points):
     traffic_cone_bp = world.get_blueprint_library().find('static.prop.constructioncone')

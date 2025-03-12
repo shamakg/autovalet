@@ -70,6 +70,10 @@ DATA_COLLECTION_PERIOD = 200 # ms
 SHOULD_PIPELINE = True
 SHOULD_ADJUST_MODEL = False
 TIMEOUT = 120 * 1000 # ms
+IMAGE_DOWNSIZE = 1
+
+# adjust latencies for image downsizing
+NETWORK_SEND_LATENCIES = [latency // IMAGE_DOWNSIZE for latency in NETWORK_SEND_LATENCIES]
 
 class Mode(Enum):
     NORMAL = 1
@@ -96,7 +100,7 @@ def run_scenario(client, destination_parking_spot, parked_spots, latency, ious, 
         town04_spectator_bev(world)
 
         # load parked cars
-        parked_cars, parked_cars_bbs = town04_spawn_parked_cars(world, parked_spots, destination_parking_spot, NUM_RANDOM_CARS)
+        parked_cars, parked_cars_bbs, parked_cars_and_spots_bbs = town04_spawn_parked_cars(world, parked_spots, destination_parking_spot, NUM_RANDOM_CARS)
 
         # spawn traffic cones
         traffic_cones, traffic_cone_bbs = town04_spawn_traffic_cones(world, [
@@ -130,7 +134,7 @@ def run_scenario(client, destination_parking_spot, parked_spots, latency, ious, 
         recording_obs = None
 
         # HACK: enable perfect perception of parked cars
-        car.car.obs = clear_obstacle_map(obstacle_map_from_bbs(parked_cars_bbs + traffic_cone_bbs + walker_bbs))
+        car.car.obs = clear_obstacle_map(obstacle_map_from_bbs(parked_cars_and_spots_bbs + traffic_cone_bbs + walker_bbs))
 
         # tick world to load car and cameras
         world.tick()
@@ -194,6 +198,13 @@ def run_scenario(client, destination_parking_spot, parked_spots, latency, ious, 
                         if img is None: break
                         img_shape = img.shape
                         imgs[img_name] = cv2.resize(img, (img.shape[1]//2, img.shape[0]//2))
+                        imgs[img_name] = cv2.resize(img, (img_shape[1], img_shape[0]))
+                if IMAGE_DOWNSIZE > 1:
+                    for img_name in imgs:
+                        img = imgs[img_name]
+                        if img is None: break
+                        img_shape = img.shape
+                        imgs[img_name] = cv2.resize(img, (img.shape[1]//IMAGE_DOWNSIZE, img.shape[0]//IMAGE_DOWNSIZE))
                         imgs[img_name] = cv2.resize(img, (img_shape[1], img_shape[0]))
 
                 cur = car.car.cur
