@@ -697,7 +697,7 @@ class FisheyeCamera:
         self.maptable = self.compute_mapping(fisheye_width=width, fisheye_height=height, projection_model=self.projection_model, pinhole_intrisic_matrix=self.pinhole_intrisic_matrix)
         
         # Compute circular mask
-        self.circular_mask = circular_mask = np.zeros((height, width), dtype=np.float)
+        self.circular_mask = circular_mask = np.zeros((height, width), dtype=np.float64)
         for y in range(height):
             for x in range(width):
                 r = np.sqrt(((x - cx - .5) / fx) ** 2 + ((y - cy - .5) / fy) ** 2)

@@ -11,7 +11,7 @@ from parking_position import (
 )
 from v2 import CarlaCar, Mode, ObstacleMap
 
-HOST = 'host.docker.internal'
+HOST = 'localhost'
 PORT = 2000
 DEBUG = True
 EGO_VEHICLE = 'vehicle.audi.etron'
@@ -68,11 +68,12 @@ def town04_load(client):
     world.unload_map_layer(carla.MapLayer.ParkedVehicles)
     return world
 
-def town04_spawn_ego_vehicle(world, destination_parking_spot):
+def town04_spawn_ego_vehicle(world, destination_parking_spot, car_class=None):
+    if car_class is None:
+        car_class = CarlaCar
     destination_parking_spot_loc = parking_vehicle_locations_Town04[destination_parking_spot]
     blueprint = world.get_blueprint_library().filter(EGO_VEHICLE)[0]
-    # return CarlaCar(world, blueprint, carla.Transform(destination_parking_spot_loc, rotation=carla.Rotation(yaw=180)), destination_parking_spot_loc, approximate_bb_from_center(destination_parking_spot_loc), debug=DEBUG)
-    return CarlaCar(world, blueprint, player_location_Town04, destination_parking_spot_loc, approximate_bb_from_center(destination_parking_spot_loc), debug=DEBUG)
+    return car_class(world, blueprint, player_location_Town04, destination_parking_spot_loc, approximate_bb_from_center(destination_parking_spot_loc), debug=DEBUG)
 
 def town04_spawn_parked_cars(world, spawn_points, skip, num_random_cars):
     blueprints = world.get_blueprint_library().filter('vehicle.*.*')

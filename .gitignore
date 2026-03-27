@@ -2,3 +2,6 @@ __pycache__
 *.pyc
 /results
 test.mp4
+diffusion_planner/Diffusion-Planner
+diffusion_planner/nuplan-devkit
+diffusion_planner/checkpoints

@@ -1,3 +1,4 @@
+import os
 from math import sqrt
 from enum import Enum
 from typing import Tuple, List
@@ -385,18 +386,23 @@ class CarlaCar():
 
         return ret
         
-    def init_recording(self, recording_path, width=480, height=320, fps=20):
+    def init_recording(self, recording_path, width=480, height=320, fps=20, top_down=False):
         world = self.world
         actor = self.actor
         cam_bp = world.get_blueprint_library().find('sensor.camera.rgb')
         cam_bp.set_attribute('image_size_x', str(width))
         cam_bp.set_attribute('image_size_y', str(height))
         cam_bp.set_attribute('fov', str(90))
-        # local-space offset: 10m behind, 5m up, pitched down 20 degrees
-        cam_transform = carla.Transform(
-            carla.Location(x=-10, z=5),
-            carla.Rotation(pitch=-20)
-        )
+        if top_down:
+            cam_transform = carla.Transform(
+                carla.Location(x=0, z=30),
+                carla.Rotation(pitch=-90)
+            )
+        else:
+            cam_transform = carla.Transform(
+                carla.Location(x=-10, z=5),
+                carla.Rotation(pitch=-20)
+            )
         cam = world.spawn_actor(cam_bp, cam_transform, attach_to=actor, attachment_type=carla.AttachmentType.Rigid)
         self.recording_writer = cv2.VideoWriter(
             recording_path,
@@ -406,6 +412,7 @@ class CarlaCar():
         )
         self.recording_width = width
         self.recording_height = height
+        self.recording_path = recording_path
         cam.listen(lambda image: self.frames.put(image))
         return cam
     
@@ -427,6 +434,12 @@ class CarlaCar():
     def finalize_recording(self):
         if hasattr(self, 'recording_writer') and self.recording_writer:
             self.recording_writer.release()
+            path = getattr(self, 'recording_path', None)
+            if path and os.path.exists(path):
+                tmp = path + '.tmp.mp4'
+                os.rename(path, tmp)
+                os.system(f'ffmpeg -y -i "{tmp}" -vcodec libx264 -crf 18 -acodec aac "{path}" -loglevel quiet')
+                os.remove(tmp)
     
     def debug_init(self, spawn_point, destination):
         self.world.debug.draw_string(spawn_point.location, 'start', draw_shadow=False, color=carla.Color(r=255, g=0, b=0), life_time=120.0, persistent_lines=True)

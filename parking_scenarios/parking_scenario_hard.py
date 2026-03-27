@@ -1,15 +1,15 @@
 from enum import Enum
 from srunner.scenariomanager.scenarioatomics.atomic_behaviors import UpdateAllActorControls
 from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest, ScenarioTimeoutTest
-from leaderboard.autovalet.parking_scenarios.vehicle_opens_door_parking import VehicleOpensDoorTwoWaysParking
+from parking_scenarios.vehicle_opens_door_parking import VehicleOpensDoorTwoWaysParking
 from srunner.scenarios.basic_scenario import BasicScenario
 from srunner.scenarioconfigs.scenario_configuration import ActorConfigurationData, ScenarioConfiguration
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 import py_trees
 
 from carla import Transform
-from leaderboard.autovalet.parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
-from leaderboard.autovalet.parking_scenarios.smart_pedestrian_crossing_parking import SmartPedestrianCrossingParking
+from parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
+from parking_scenarios.smart_pedestrian_crossing_parking import SmartPedestrianCrossingParking
 
 from v2_experiment_utils import (
     town04_spawn_ego_vehicle,
@@ -50,7 +50,7 @@ class HardMode(Enum):
 
 class ParkingScenarioHard(BasicScenario):
     category = "ParkingScenarioHard"
-    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, mode = HardMode.PedMode):
+    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, mode = HardMode.PedMode, car_class=None):
 
         self.config = config
         self.world = world
@@ -72,7 +72,7 @@ class ParkingScenarioHard(BasicScenario):
         
         
         # load car
-        self.car = town04_spawn_ego_vehicle(world, destination)
+        self.car = town04_spawn_ego_vehicle(world, destination, car_class=car_class)
 
         CarlaDataProvider.register_actor(self.car.actor)
 

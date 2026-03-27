@@ -102,11 +102,17 @@ class PedestrianCrossingParking(BasicScenario):
           name="PedestrianCrossingParking")
       
         class MoveWalkerNoPhysics(py_trees.behaviour.Behaviour):
+            ACCEL_RANGE = (-0.5, 0.5)  # m/s² range for random constant acceleration
+            MIN_SPEED = 0.5            # m/s floor
+            MAX_SPEED = 2.5            # m/s cap
+
             def __init__(self, actor, distance, speed):
                 super().__init__("MoveWalkerNoPhysics")
                 self.actor = actor
                 self.distance = distance
                 self.speed = speed
+                self.current_speed = speed
+                self.accel = random.uniform(*self.ACCEL_RANGE)
                 self.moved = 0
 
             def update(self):
@@ -114,7 +120,9 @@ class PedestrianCrossingParking(BasicScenario):
                     return py_trees.common.Status.SUCCESS
 
                 dt = CarlaDataProvider.get_world().get_settings().fixed_delta_seconds or 0.05
-                step = self.speed * dt
+                self.current_speed = max(self.MIN_SPEED, min(self.MAX_SPEED,
+                    self.current_speed + self.accel * dt))
+                step = self.current_speed * dt
 
                 fwd = CarlaDataProvider.get_transform(self.actor).get_forward_vector()
                 loc = self.actor.get_location()

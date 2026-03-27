@@ -1,13 +1,13 @@
 
 from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest, ScenarioTimeoutTest
 from srunner.scenarios.background_activity import BackgroundBehavior
-from leaderboard.autovalet.parking_scenarios.opposite_vehicle_parking import CollisionMode, OppositeDirectionVehicle
+from parking_scenarios.opposite_vehicle_parking import CollisionMode, OppositeDirectionVehicle
 from srunner.scenarios.basic_scenario import BasicScenario
 from srunner.scenarioconfigs.scenario_configuration import ActorConfigurationData, ScenarioConfiguration
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 import py_trees
 
-from leaderboard.autovalet.parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
+from parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
 
 from v2_experiment_utils_static import (
     obstacle_map_from_bbs,

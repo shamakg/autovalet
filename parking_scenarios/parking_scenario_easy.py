@@ -1,11 +1,9 @@
 import importlib
-from leaderboard.autovalet.parking_scenarios.parking_cone import ParkingConeScenario
+from parking_scenarios.parking_cone import ParkingConeScenario
 from srunner.scenariomanager.scenarioatomics.atomic_behaviors import ScenarioTimeout, ScenarioTriggerer, UpdateAllActorControls
 from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest, ScenarioTimeoutTest
 from srunner.scenarios.background_activity import BackgroundBehavior
-from srunner.scenarios.opposite_vehicle_parking import OppositeDirectionVehicle
-from srunner.scenarios.parking_cut_in_parking import ParkingCutInParking
-from leaderboard.autovalet.parking_scenarios.vehicle_opens_door_parking import VehicleOpensDoorTwoWaysParking
+from parking_scenarios.vehicle_opens_door_parking import VehicleOpensDoorTwoWaysParking
 from srunner.scenarios.basic_scenario import BasicScenario
 from srunner.scenarioconfigs.scenario_configuration import ActorConfigurationData, ScenarioConfiguration
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider

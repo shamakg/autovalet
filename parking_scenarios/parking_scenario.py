@@ -3,14 +3,14 @@ from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTes
 from srunner.scenarios.background_activity import BackgroundBehavior
 from srunner.scenarios.opposite_vehicle_parking import OppositeDirectionVehicle
 from srunner.scenarios.parking_cut_in_parking import ParkingCutInParking
-from leaderboard.autovalet.parking_scenarios.vehicle_opens_door_parking import VehicleOpensDoorTwoWaysParking
+from parking_scenarios.vehicle_opens_door_parking import VehicleOpensDoorTwoWaysParking
 from srunner.scenarios.basic_scenario import BasicScenario
 from srunner.scenarioconfigs.scenario_configuration import ActorConfigurationData, ScenarioConfiguration
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 import py_trees
 
 from carla import Transform
-from leaderboard.autovalet.parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
+from parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
 from v2_experiment_utils import (
     town04_spawn_ego_vehicle,
     town04_spawn_parked_cars,

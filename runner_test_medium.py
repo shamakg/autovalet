@@ -4,12 +4,12 @@ import json
 import os
 from datetime import datetime
 from enum import Enum
-from leaderboard.autovalet.parking_scenarios.parking_scenario import ParkingScenario
-from leaderboard.autovalet.parking_scenarios.parking_scenario_easy import ParkingScenarioEasy
+# from parking_scenarios.parking_scenario import ParkingScenario
+from parking_scenarios.parking_scenario_easy import ParkingScenarioEasy
 
-from leaderboard.autovalet.parking_scenarios.parking_scenario_medium import ParkingScenarioMedium
-from leaderboard.autovalet.parking_scenarios.parking_scenario_hard import HardMode, ParkingScenarioHard
-from leaderboard.autovalet.parking_scenarios.opposite_vehicle_parking import CollisionMode
+from parking_scenarios.parking_scenario_medium import ParkingScenarioMedium
+from parking_scenarios.parking_scenario_hard import HardMode, ParkingScenarioHard
+from parking_scenarios.opposite_vehicle_parking import CollisionMode
 from v2 import ObstacleMap
 from srunner.scenariomanager.timer import GameTime
 from srunner.scenarioconfigs.scenario_configuration import ActorConfigurationData, ScenarioConfiguration
@@ -129,6 +129,9 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
         ego_loc = parking_scenario.car.actor.get_location()
         parking_scenario.car.car.obs = obstacle_map_from_bbs(
             parking_scenario.parked_cars_bbs, min_y=ego_loc.y - 5)
+        # Give the diffusion adapter access to parked car actors so it can pass
+        # their real positions, yaws, and dimensions to the model as agent features.
+        parking_scenario.car.car.obs.parked_cars = parking_scenario.parked_cars
         parked_car_ids = {car.id for car in parking_scenario.parked_cars}
         collision_tracker = obstacle_map_from_bbs(all_bbs_list)
 
@@ -149,7 +152,7 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
 
         while not is_done(parking_scenario.car):
 
-            ### ----------- Step actors
+            ### ----------- tick all the actors
 
             world.tick()
             timestamp = world.get_snapshot().timestamp
