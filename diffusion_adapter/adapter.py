@@ -59,8 +59,8 @@ from v2 import TrajectoryPoint, Direction, MIN_SPEED, MAX_SPEED, plan_hybrid_a_s
 from utils.map_process import build_map_features, set_astar_path, LANE_NUM, ROUTE_LANE_NUM, get_dist
 
 
-GOAL_GUIDANCE_SCALE = 200.0
-PATH_GUIDANCE_SCALE = 300.0
+GOAL_GUIDANCE_SCALE = 3000.0
+PATH_GUIDANCE_SCALE = 2000.0
 
 
 class _CombinedGuidance:
@@ -83,12 +83,12 @@ class _CombinedGuidance:
         self._path = torch.tensor(path_ego, dtype=torch.float32).to(_device)
 
     def __call__(self, x, t, cond, *args, **kwargs):
+        
         inputs = kwargs.get('inputs')
         state_normalizer = kwargs.get('state_normalizer')
         observation_normalizer = kwargs.get('observation_normalizer')
         model = kwargs.get('model')
         model_condition = kwargs.get('model_condition')
-
         B, P, _ = x.shape
 
         # --- One-step denoising correction (from GuidanceWrapper) ---
@@ -135,6 +135,8 @@ class _CombinedGuidance:
             dist = torch.norm(ego_final - self._goal[None], dim=-1)  # [B]
             goal_energy = -GOAL_GUIDANCE_SCALE * dist.mean()
             energy = energy + goal_energy
+
+        
 
         return energy
 
@@ -293,12 +295,12 @@ def _parse_model_output(outputs, anchor_ego_state, cur):
 
     # SE(2) composition: anchor @ local → global
     
-    anchor_ego_state_fixed = anchor_ego_state.copy()
-    anchor_ego_state_fixed[2] = -anchor_ego_state[2]
-    anchor_matrix = _state_se2_array_to_transform_matrix(anchor_ego_state_fixed)
-    pose_matrices = _state_se2_array_to_transform_matrix_batch(local_poses)
-    global_matrices = anchor_matrix @ pose_matrices
-    global_poses = _transform_matrix_to_state_se2_array_batch(global_matrices)
+    h0 = anchor_ego_state[2]
+    x0, y0 = anchor_ego_state[0], anchor_ego_state[1]
+    global_x = x0 + np.cos(h0) * local_poses[:, 0] - np.sin(h0) * local_poses[:, 1]
+    global_y = y0 + np.sin(h0) * local_poses[:, 0] + np.cos(h0) * local_poses[:, 1]
+    global_heading = h0 + local_poses[:, 2]
+    global_poses = np.stack([global_x, global_y, global_heading], axis=1)
 
     print(f"anchor: ({anchor_ego_state[0]:.2f}, {anchor_ego_state[1]:.2f}, h={np.rad2deg(anchor_ego_state[2]):.1f}°)")
     print(f"global[0]: ({global_poses[0,0]:.2f}, {global_poses[0,1]:.2f})")
@@ -385,48 +387,81 @@ def diffusion_plan( cur, destination, obs, world):
 
 
     try:
-        ego_x, ego_y, ego_heading = carla_transform_to_standard(
-            cur.x, cur.y, np.rad2deg(cur.angle)
-        )
+        ego_x, ego_y, ego_heading = carla_transform_to_standard(cur.x, cur.y, np.rad2deg(cur.angle))
         anchor_ego_state = np.array([ego_x, ego_y, ego_heading], dtype=np.float64)
 
-        # Set goal in ego-centric standard frame for guidance
-        dest_x, dest_y, _ = carla_transform_to_standard(destination.x, destination.y, 0.0)
-        anchor_ego_state_fixed = anchor_ego_state.copy()
-        anchor_ego_state_fixed[2] = -anchor_ego_state[2]
-        anchor_matrix = _state_se2_array_to_transform_matrix(anchor_ego_state_fixed)
-        anchor_inv = np.linalg.inv(anchor_matrix)
-        dest_local = anchor_inv @ np.array([dest_x, dest_y, 1.0])
-        _combined_guidance.set_goal(float(dest_local[0]), float(dest_local[1]))
 
-        print(f"dest local ego: ({dest_local[0]:.2f}, {dest_local[1]:.2f})")
+        print(f"destination CARLA x={destination.x:.2f} y={destination.y:.2f}")
+        print(f"AISLE_23_X={285.45}, ROW2_X=290.9, ROW3_X=280.0")
+        print(f"dest is {'ROW2 (east/right)' if destination.x > 285.45 else 'ROW3 (west/left)'}")
+        print(f"Car x={cur.x:.1f}, Row2 x=290.9, Row3 x=280.0")
+        print(f"Destination x={destination.x:.1f}")
+        print(f"Visual turn direction: LEFT")
+        print(f"Therefore: increasing x = {'west (LEFT)' if destination.x > cur.x else 'east (RIGHT)'}")
+        dx_world = destination.x - cur.x  # positive = east
+        dy_world = destination.y - cur.y  # positive = north
+        print(f"dest relative to car: dx={dx_world:.2f} (east+), dy={dy_world:.2f} (north+)")
+        print(f"car heading: {np.rad2deg(cur.angle):.1f} degrees")
+
+        dest_x, dest_y, _ = carla_transform_to_standard(destination.x, destination.y, 0.0)
+        h = anchor_ego_state[2]
+        x0, y0 = anchor_ego_state[0], anchor_ego_state[1]
+
+        dest_ego_x, dest_ego_y = world_to_ego(dest_x, dest_y, x0, y0, h)
+        _combined_guidance.set_goal(float(dest_ego_x), float(dest_ego_y))
+        print(f"dest local ego: ({dest_ego_x:.2f}, {dest_ego_y:.2f})")
         print(f"expected: x>0 (ahead), y>0 (left, spot is to the left)")
 
-        # Set A* path in ego-centric standard frame for path-following guidance
         from utils.map_process import _map_processor
+        path_ego = None
         if _map_processor._global_path is not None:
-            path_global = _map_processor._global_path  # (M, 2) standard frame
-            # Transform to ego-centric: append 1s for homogeneous coords
-            ones = np.ones((len(path_global), 1), dtype=np.float64)
-            path_h = np.hstack([path_global, ones])  # (M, 3)
-            path_ego = (anchor_inv @ path_h.T).T[:, :2]  # (M, 2)
+            path_global = _map_processor._global_path
+            dists = np.linalg.norm(path_global - np.array([x0, y0]), axis=1)
+            closest = int(np.argmin(dists))
+            path_remaining = path_global[closest:]
+            path_ego = np.array([world_to_ego(p[0], p[1], x0, y0, h) for p in path_remaining])
             _combined_guidance.set_path(path_ego)
 
         inputs = _build_model_inputs(cur, obs)
-        _draw_route_lanes_debug(world, anchor_ego_state, inputs['route_lanes'][0])
+        route_lanes_np = inputs['route_lanes'][0].cpu().numpy()
+        for lane_idx in range(route_lanes_np.shape[0]):
+            lane = route_lanes_np[lane_idx]
+            if np.abs(lane[:, :2]).sum() < 1e-6:
+                continue
+            for pt_idx in range(0, lane.shape[0], 2):
+                ego_x, ego_y = float(lane[pt_idx, 0]), float(lane[pt_idx, 1])
+                wx, wy = ego_to_world(ego_x, ego_y, x0, y0, h)
+                cx, cy, _ = standard_to_carla(wx, wy, 0.0)
+                world.debug.draw_point(
+                    carla.Location(x=cx, y=cy, z=0.5),
+                    size=0.1,
+                    color=carla.Color(r=255, g=0, b=0),
+                    life_time=1.0
+                )
+        # _draw_route_lanes_debug(world, anchor_ego_state, inputs['route_lanes'][0])
 
         if _observation_normalizer is not None:
             inputs = _observation_normalizer(inputs)
-        
+
         with torch.no_grad():
             _, outputs = _model(inputs)
 
         trajectory = _parse_model_output(outputs, anchor_ego_state, cur)
 
-        _draw_ego_frame_debug(world, anchor_ego_state, dest_local, path_ego)
-        
+        dest_ego = np.array([dest_ego_x, dest_ego_y])
+        if path_ego is not None:
+            _draw_ego_frame_debug(world, anchor_ego_state, dest_ego, path_ego)
+
         for tp in trajectory:
             tp.speed = np.clip(tp.speed, MIN_SPEED, MAX_SPEED)
+
+        from diffusion_planner.data_process.utils import vector_set_coordinates_to_local_frame
+        test_pt = np.array([[[dest_x, dest_y]]], dtype=np.float64)
+        test_avail = np.ones((1, 1), dtype=np.bool_)
+        test_ego = vector_set_coordinates_to_local_frame(test_pt, test_avail, anchor_ego_state)[0][0]
+        print(f"vector_set transform: ({test_ego[0]:.2f}, {test_ego[1]:.2f})")
+        print(f"world_to_ego transform: ({dest_ego_x:.2f}, {dest_ego_y:.2f})")
+        print(f"match: {np.allclose(test_ego, [dest_ego_x, dest_ego_y], atol=0.01)}")
 
         return trajectory
 
@@ -466,67 +501,86 @@ def ego_to_world(ex, ey, x0, y0, h):
     wy = y0 + np.sin(h) * ex + np.cos(h) * ey
     return wx, wy
 
-def _draw_route_lanes_debug(world, anchor_ego_state, route_lanes_tensor):
-    route_lanes_np = route_lanes_tensor.cpu().numpy() if hasattr(route_lanes_tensor, 'cpu') else route_lanes_tensor
+# def _draw_route_lanes_debug(world, anchor_ego_state, route_lanes_tensor):
+#     route_lanes_np = route_lanes_tensor.cpu().numpy() if hasattr(route_lanes_tensor, 'cpu') else route_lanes_tensor
     
-    for lane_idx in range(min(12, route_lanes_np.shape[0])):
-        lane = route_lanes_np[lane_idx]  # (20, 12)
+#     for lane_idx in range(min(12, route_lanes_np.shape[0])):
+#         lane = route_lanes_np[lane_idx]  # (20, 12)
         
-        # Skip empty lanes
-        if np.abs(lane[:, :2]).sum() < 1e-6:
-            continue
+#         # Skip empty lanes
+#         if np.abs(lane[:, :2]).sum() < 1e-6:
+#             continue
             
-        for pt_idx in range(0, lane.shape[0], 2):  # every other point
+#         for pt_idx in range(0, lane.shape[0], 2):  # every other point
 
             
-            ego_x, ego_y = float(lane[pt_idx, 0]), float(lane[pt_idx, 1])
+#             ego_x, ego_y = float(lane[pt_idx, 0]), float(lane[pt_idx, 1])
             
-            h = anchor_ego_state[2]
-            std_x = anchor_ego_state[0] + ego_x * np.cos(h) - ego_y * np.sin(h)
-            std_y = anchor_ego_state[1] + ego_x * np.sin(h) + ego_y * np.cos(h)
+#             h = anchor_ego_state[2]
+#             std_x = anchor_ego_state[0] + ego_x * np.cos(h) - ego_y * np.sin(h)
+#             std_y = anchor_ego_state[1] + ego_x * np.sin(h) + ego_y * np.cos(h)
             
-            carla_x, carla_y, _ = standard_to_carla(std_x, std_y, 0.0)
+#             carla_x, carla_y, _ = standard_to_carla(std_x, std_y, 0.0)
             
-            color = carla.Color(r=0, g=255, b=0) if lane_idx == 0 else carla.Color(r=255, g=165, b=0)
-            world.debug.draw_point(
-                carla.Location(x=carla_x, y=carla_y, z=0.5),
-                size=0.1,
-                color=color,
-                life_time=1.0
-            )
+#             color = carla.Color(r=0, g=255, b=0) if lane_idx == 0 else carla.Color(r=255, g=165, b=0)
+#             world.debug.draw_point(
+#                 carla.Location(x=carla_x, y=carla_y, z=0.5),
+#                 size=0.1,
+#                 color=color,
+#                 life_time=1.0
+#             )
 
 
-            color2 = carla.Color(r=200, g=35, b=0)
-            if pt_idx == 0 and lane_idx == 0:
-                world.debug.draw_string(
-                    carla.Location(x=carla_x, y=carla_y, z=1.0),
-                    f'R{lane_idx}',
-                    color=color2,
-                    life_time=0.1
-                )
+#             color2 = carla.Color(r=200, g=35, b=0)
+#             if pt_idx == 0 and lane_idx == 0:
+#                 world.debug.draw_string(
+#                     carla.Location(x=carla_x, y=carla_y, z=1.0),
+#                     f'R{lane_idx}',
+#                     color=color2,
+#                     life_time=0.1
+#                 )
 
 def _draw_ego_frame_debug(world, anchor_ego_state, dest_local, path_ego):
     """Draw destination and path in ego frame, transformed back to world for visualization."""
-    h = -anchor_ego_state[2]
     x0, y0 = anchor_ego_state[0], anchor_ego_state[1]
     
     def ego_to_world_carla(ex, ey):
-        # ego → standard
-        std_x = x0 + np.cos(h) * ex - np.sin(h) * ey
-        std_y = y0 + np.sin(h) * ex + np.cos(h) * ey
-        # standard → carla
-        cx, cy, _ = standard_to_carla(std_x, std_y, 0.0)
+        wx, wy = ego_to_world(ex, ey, x0, y0, anchor_ego_state[2])
+        cx, cy, _ = standard_to_carla(wx, wy, 0.0)
         return cx, cy
     
-    # Draw destination (red)
+
+    # Draw destination (red) - very prominent
     dx, dy = ego_to_world_carla(dest_local[0], dest_local[1])
+    loc = carla.Location(x=dx, y=dy, z=1.0)
+
+    # Large red sphere
+    world.debug.draw_point(
+        loc,
+        size=0.1,
+        color=carla.Color(r=255, g=0, b=0),
+        life_time=0.5
+    )
+
+    # Tall vertical line
+    world.debug.draw_line(
+        carla.Location(x=dx, y=dy, z=0.0),
+        carla.Location(x=dx, y=dy, z=5.0),
+        thickness=0.3,
+        color=carla.Color(r=255, g=0, b=0),
+        life_time=0.5
+    )
+
+    # Text label
     world.debug.draw_string(
-        carla.Location(x=dx, y=dy, z=1.0),
+        carla.Location(x=dx, y=dy, z=5.0),
         'GOAL',
         color=carla.Color(r=255, g=0, b=0),
-        life_time=1.0
+        life_time=0.5
     )
     
+    print(f"GOAL drawn at CARLA: ({dx:.2f}, {dy:.2f}), ego frame: ({dest_local[0]:.2f}, {dest_local[1]:.2f})")
+
     # Draw path points (blue)
     for i in range(0, len(path_ego), 5):
         px, py = ego_to_world_carla(path_ego[i, 0], path_ego[i, 1])

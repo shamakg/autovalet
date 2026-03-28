@@ -165,23 +165,21 @@ def _build_lane_feature(
  
     resampled  = _interpolate_polyline(center, LANE_LEN)
 
-    vec = resampled[-1] - resampled[0]
-    heading = np.array([np.cos(anchor_ego_state[2]), np.sin(anchor_ego_state[2])])
+    # vec = resampled[-1] - resampled[0]
+    # heading = np.array([np.cos(anchor_ego_state[2]), np.sin(anchor_ego_state[2])])
 
-    if np.dot(vec, heading) < 0:
-        resampled = resampled[::-1]
+    # if np.dot(vec, heading) < 0:
+    #     resampled = resampled[::-1]
     N = resampled.shape[0]
  
     # Transform centerline to ego frame
     avails         = np.ones((1, N), dtype=np.bool_)
     center_3d      = resampled[np.newaxis, :, :]          # (1, N, 2)
 
-    anchor_for_transform = anchor_ego_state.copy()
-    anchor_for_transform[2] = -anchor_ego_state[2]
 
-    center_ego     = vector_set_coordinates_to_local_frame(
-        center_3d, avails, anchor_for_transform
-    )[0]                                               # (N, 2)
+    center_ego = vector_set_coordinates_to_local_frame(
+        center_3d, avails, anchor_ego_state
+    )[0]                                              # (N, 2)
     # print("CENTER EGO" , center_ego[:3])
  
     # Forward vector (match training: last point gets zero vector)
@@ -319,20 +317,13 @@ class MapProcessor:
             return lanes_output, route_lanes_output
 
         path = self._global_path
+
         N = len(path)
-        
+        step = max(1, N // ROUTE_LANE_NUM)
         route_idx = 0
-
-        dists = np.linalg.norm(path - ego_xy, axis=1)
-        closest = int(np.argmin(dists))
-
-        # Split full path into overlapping segments of LANE_LEN points
-        step = 5
-        for start in range(closest, N, step):
+        for start in range(0, N, step):
             end = min(N, start + LANE_LEN)
-            if end - start < 2:
-                break
-            if route_idx >= ROUTE_LANE_NUM:
+            if end - start < 2 or route_idx >= ROUTE_LANE_NUM:
                 break
             seg = _interpolate_polyline(path[start:end], LANE_LEN)
             route_lanes_output[route_idx] = _build_lane_feature(seg, anchor_ego_state)
