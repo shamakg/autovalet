@@ -42,6 +42,7 @@ USE_DIFFUSION = True
 REPLAN_INTERVAL = 1  # replan every tick as the original paper does https://arxiv.org/pdf/2501.15564
 DIFFUSION_LOOKAHEAD = 10  # lookahead steps for pure-pursuit (overrides v2.LOOKAHEAD=3 for the 80-step diffusion trajectory)
 LOOKAHEAD_DIST_M = 3.0
+LOOKAHEAD = 3
 
 
 class CarlaCameraSensor():
@@ -312,7 +313,7 @@ class Car():
 
     def _call_planner(self, cur: TrajectoryPoint, destination: TrajectoryPoint, obs: ObstacleMap) -> list:
         if USE_DIFFUSION:
-            return diffusion_plan(cur, destination, obs)
+            return diffusion_plan(cur, destination, obs, self.world)
         return plan_hybrid_a_star(cur, destination, obs)
 
     def calculate_critical_time(self):
@@ -402,12 +403,25 @@ class Car():
         cur = self.cur
         destination = self.destination
         distance_to_destination = cur.distance(destination)
-        if self.mode == Mode.PARKED or distance_to_destination < DESTINATION_THRESHOLD and self.ti >= len(self.trajectory) - TRAJECTORY_EXTENSION - 1:
+        ti = self.ti
+        trajectory = self.trajectory
+
+        last_wp = trajectory[-1] if trajectory else None
+        def _remaining_path_length(trajectory, ti):
+            total = 0.0
+            for i in range(ti, len(trajectory) - 1):
+                total += trajectory[i].distance(trajectory[i+1])
+            return total
+        print("Remaining arc length ", _remaining_path_length(trajectory, ti))
+        print("DISTANCE TO DEST:", distance_to_destination)
+        near_end_of_trajectory = last_wp is not None and cur.distance(last_wp) < 0.5
+            
+
+        if self.mode == Mode.PARKED or (distance_to_destination < DESTINATION_THRESHOLD and _remaining_path_length(trajectory, ti) < 3.0):
             self.mode = Mode.PARKED
             return STOP_CONTROL
 
-        ti = self.ti
-        trajectory = self.trajectory
+        
         wp = trajectory[ti]
         wp_dist = cur.distance(wp)
         for i in range(ti + 1, len(trajectory)):
@@ -420,13 +434,26 @@ class Car():
 
         wp = trajectory[ti]
         future_wp = wp
-        lookahead = self._get_lookahead_dist(trajectory, ti)
-        for i in range(ti + 1, len(trajectory)):
-            if cur.distance(trajectory[i]) >= lookahead:
-                future_wp = trajectory[i]
+        for i in range(ti + 1, ti + LOOKAHEAD + 1):
+            if i >= len(trajectory):
                 break
+            new_dist = cur.distance(trajectory[i])
+            if new_dist < wp_dist:
+                break
+            future_wp = trajectory[i]
+            wp_dist = new_dist
 
         cur.direction = wp.direction
+        ## slow down as we reach the parking spot
+        ## TODO: Make this a little less hardcoded
+        dist = cur.distance(destination)
+        if dist < 3.0:
+            print(f"[speed] SLOWING DOWN")
+            
+            target_speed = max(0.0, MIN_SPEED * 0.75)
+            print(f"[slow] dist={dist:.2f} target={target_speed:.2f} cur.speed={cur.speed:.2f}")
+            wp.speed = target_speed
+        ##########
         ctrl = self.controller.run_step(
             mps_to_kmph(cur.speed),
             mps_to_kmph(wp.speed),

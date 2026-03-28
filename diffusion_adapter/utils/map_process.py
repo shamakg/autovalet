@@ -59,22 +59,33 @@ def make_branch(aisle_x, spot_y, row_x, n_pts = 8):
     ys = np.full_like(xs, spot_y)
     return _carla_polyline_to_standard(np.stack([xs, ys], axis=1))
 
+def make_approach_and_branch(aisle_x, spot_y, row_x, n_pts=20):
+    # Aisle portion: from entry to spot y
+    aisle_ys = np.linspace(AISLE_Y_START, spot_y, n_pts // 2)
+    aisle_xs = np.full_like(aisle_ys, aisle_x)
+    
+    # Branch portion: from aisle into spot
+    direction = 1.0 if row_x > aisle_x else -1.0
+    branch_xs = np.linspace(aisle_x, aisle_x + direction * SPOT_DEPTH, n_pts // 2)
+    branch_ys = np.full_like(branch_xs, spot_y)
+    
+    xs = np.concatenate([aisle_xs, branch_xs])
+    ys = np.concatenate([aisle_ys, branch_ys])
+    return _carla_polyline_to_standard(np.stack([xs, ys], axis=1))
+
 def _build_static_lanes():
     lanes = []
  
     # Main aisle between rows 2 and 3
     lanes.append(('aisle_23', make_aisle(AISLE_23_X, AISLE_Y_START, AISLE_Y_END)))
  
-    # Entry aisle (from spawn point)
-    lanes.append(('aisle_entry', make_aisle(AISLE_ENTRY_X, AISLE_Y_START, AISLE_Y_END)))
+    # # Branch lanes into each row 2 spot
+    # for spot_y in ROW2_SPOT_YS:
+    #     lanes.append(('branch_row2', make_branch(AISLE_23_X, spot_y, ROW2_X)))
  
-    # Branch lanes into each row 2 spot
-    for spot_y in ROW2_SPOT_YS:
-        lanes.append(('branch_row2', make_branch(AISLE_23_X, spot_y, ROW2_X)))
- 
-    # Branch lanes into each row 3 spot
-    for spot_y in ROW3_SPOT_YS:
-        lanes.append(('branch_row3', make_branch(AISLE_23_X, spot_y, ROW3_X)))
+    # # Branch lanes into each row 3 spot
+    # for spot_y in ROW3_SPOT_YS:
+    #     lanes.append(('branch_row3', make_branch(AISLE_23_X, spot_y, ROW3_X)))
  
     return lanes
 
@@ -153,14 +164,25 @@ def _build_lane_feature(
     from diffusion_planner.data_process.utils import vector_set_coordinates_to_local_frame
  
     resampled  = _interpolate_polyline(center, LANE_LEN)
+
+    vec = resampled[-1] - resampled[0]
+    heading = np.array([np.cos(anchor_ego_state[2]), np.sin(anchor_ego_state[2])])
+
+    if np.dot(vec, heading) < 0:
+        resampled = resampled[::-1]
     N = resampled.shape[0]
  
     # Transform centerline to ego frame
     avails         = np.ones((1, N), dtype=np.bool_)
     center_3d      = resampled[np.newaxis, :, :]          # (1, N, 2)
+
+    anchor_for_transform = anchor_ego_state.copy()
+    anchor_for_transform[2] = -anchor_ego_state[2]
+
     center_ego     = vector_set_coordinates_to_local_frame(
-        center_3d, avails, anchor_ego_state
+        center_3d, avails, anchor_for_transform
     )[0]                                               # (N, 2)
+    # print("CENTER EGO" , center_ego[:3])
  
     # Forward vector (match training: last point gets zero vector)
     fwd            = np.diff(center_ego, axis=0)
@@ -198,6 +220,7 @@ class MapProcessor:
     def __init__(self):
         # Full A* path in standard global frame: (M, 2)
         self._global_path: Optional[np.ndarray] = None
+        self._destination_lane = None
  
     def set_astar_path(self, trajectory):
         """
@@ -217,6 +240,16 @@ class MapProcessor:
  
         self._global_path = np.array(pts, dtype=np.float64)  # (M, 2)
         print(f"[map_process] A* path cached: {len(pts)} points")
+
+    def set_destination(self, dest_x, dest_y):
+        """Call once per scenario with the destination CARLA coordinates."""
+        # Figure out which row and build the branch lane
+        if dest_x > AISLE_23_X:
+            row_x = ROW2_X
+        else:
+            row_x = ROW3_X
+        
+        self._destination_lane = make_approach_and_branch(AISLE_23_X, dest_y, row_x)
  
     def _extract_segments(self, closest: int, path: np.ndarray):
         """
@@ -230,16 +263,16 @@ class MapProcessor:
         segments = []
 
         # # Include some path behind the ego (up to 30 points back)
-        behind_start = max(0, closest - 30)
-        behind_end   = closest + 2  # at least 2 points
-        if behind_end - behind_start >= 2:
-            seg = _interpolate_polyline(path[behind_start:behind_end], LANE_LEN)
-            segments.append(seg)
+        # behind_start = max(0, closest - 30)
+        # behind_end   = closest + 2  # at least 2 points
+        # if behind_end - behind_start >= 2:
+        #     seg = _interpolate_polyline(path[behind_start:behind_end], LANE_LEN)
+        #     segments.append(seg)
 
         # Forward segments at staggered starts along the path
         # Each segment covers a different portion of the upcoming route
         step = 10  # stride between segment starts (in path indices)
-        for start_offset in range(0, 100, step):
+        for start_offset in range(10, 120, step):
             seg_start = closest + start_offset
             seg_end   = min(N, seg_start + 20)  # ~80 raw points per segment
             if seg_start >= N - 1:
@@ -251,42 +284,22 @@ class MapProcessor:
 
         return segments
 
-    def build_map_features(
-        self,
-        anchor_ego_state: np.ndarray,
-    ):
-        """
-        Build lanes and route_lanes tensors for DiffusionPlanner.
-        Called every tick with the current ego pose.
-
-        :param anchor_ego_state: (3,) [x, y, heading] in standard frame
-        :return: (lanes, route_lanes)
-            lanes:       np.ndarray (LANE_NUM, LANE_LEN, 12)
-            route_lanes: np.ndarray (ROUTE_LANE_NUM, LANE_LEN, 12)
-        """
-        lanes_output       = np.zeros((LANE_NUM,       LANE_LEN, LANE_FEATURE_DIM), dtype=np.float32)
+    def build_map_features(self, anchor_ego_state):
+        lanes_output = np.zeros((LANE_NUM, LANE_LEN, LANE_FEATURE_DIM), dtype=np.float32)
         route_lanes_output = np.zeros((ROUTE_LANE_NUM, LANE_LEN, LANE_FEATURE_DIM), dtype=np.float32)
 
-        ego_xy  = anchor_ego_state[:2]
+        ego_xy = anchor_ego_state[:2]
 
-
-        # ------------------------------------------------------------------
-        # 1. lanes — static parking lot geometry
-        #    Distance filter: skip lanes more than 40m from ego
-        # ------------------------------------------------------------------
+        # 1. Static lanes
         lane_idx = 0
         for tag, polyline in _STATIC_LANES:
             if lane_idx >= LANE_NUM:
                 break
- 
             dists = np.linalg.norm(polyline - ego_xy, axis=1)
             if dists.min() > 40.0:
                 continue
- 
             lanes_output[lane_idx] = _build_lane_feature(polyline, anchor_ego_state)
             lane_idx += 1
- 
-            # Give aisles lateral offset copies for lane-width context
             if tag in ('aisle_23', 'aisle_entry'):
                 for offset in [-LANE_WIDTH, LANE_WIDTH]:
                     if lane_idx >= LANE_NUM:
@@ -294,26 +307,36 @@ class MapProcessor:
                     shifted = _offset_polyline(polyline, offset)
                     lanes_output[lane_idx] = _build_lane_feature(shifted, anchor_ego_state)
                     lane_idx += 1
-                    
+
+        if self._destination_lane is not None:
+            dists = np.linalg.norm(self._destination_lane - ego_xy, axis=1)
+            if dists.min() <= 40.0 and lane_idx < LANE_NUM:
+                lanes_output[lane_idx] = _build_lane_feature(self._destination_lane, anchor_ego_state)
+                lane_idx += 1
+
+        # 2. Route lanes — just use full A* path split into segments
         if self._global_path is None or len(self._global_path) < 2:
             return lanes_output, route_lanes_output
 
-        ## build route_lanes (just use the A* path)
-        if self._global_path is not None and len(self._global_path) >= 2:
-            path    = self._global_path
-            dists   = np.linalg.norm(path - ego_xy, axis=1)
-            closest = int(np.argmin(dists))
- 
-            route_idx = 0
-            for seg in self._extract_segments(closest, path):
-                for offset in [0.0, -1.0, 1.0]:
-                    if route_idx >= ROUTE_LANE_NUM:
-                        break
-                    shifted = _offset_polyline(seg, offset)
-                    route_lanes_output[route_idx] = _build_lane_feature(shifted, anchor_ego_state)
-                    route_idx += 1
-                if route_idx >= ROUTE_LANE_NUM:
-                    break   
+        path = self._global_path
+        N = len(path)
+        
+        route_idx = 0
+
+        dists = np.linalg.norm(path - ego_xy, axis=1)
+        closest = int(np.argmin(dists))
+
+        # Split full path into overlapping segments of LANE_LEN points
+        step = 5
+        for start in range(closest, N, step):
+            end = min(N, start + LANE_LEN)
+            if end - start < 2:
+                break
+            if route_idx >= ROUTE_LANE_NUM:
+                break
+            seg = _interpolate_polyline(path[start:end], LANE_LEN)
+            route_lanes_output[route_idx] = _build_lane_feature(seg, anchor_ego_state)
+            route_idx += 1
 
         return lanes_output, route_lanes_output
  
@@ -335,6 +358,9 @@ def build_map_features(anchor_ego_state: np.ndarray):
     """
     return _map_processor.build_map_features(anchor_ego_state)
 
+def set_destination(dest_x, dest_y):
+    _map_processor.set_destination(dest_x, dest_y)
+
 def get_dist(anchor_ego_state):
     if _map_processor._global_path is None or len(_map_processor._global_path) < 2:
         return 0.0
@@ -343,7 +369,18 @@ def get_dist(anchor_ego_state):
     path = _map_processor._global_path
 
     dists = np.linalg.norm(path - ego_xy, axis=1)
-    closest = int(np.argmin(dists))
+    heading = anchor_ego_state[2]
+    forward = np.array([np.cos(heading), np.sin(heading)])
+    vecs = path - ego_xy
+    proj = vecs @ forward
+
+    mask = proj > 0  # points ahead of ego
+    if np.any(mask):
+        forward_dists = dists.copy()
+        forward_dists[~mask] = np.inf  # ignore points behind
+        closest = int(np.argmin(forward_dists))  # closest point that is ahead
+    else:
+        closest = int(np.argmin(dists)) 
 
     if closest == 0:
         return 0.0

@@ -21,6 +21,7 @@ import torch
 import numpy as np
 from typing import List, Optional
 import sys
+import carla
 
 ### HACK:
 _DP_PKG_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Diffusion-Planner')                                                            
@@ -58,8 +59,8 @@ from v2 import TrajectoryPoint, Direction, MIN_SPEED, MAX_SPEED, plan_hybrid_a_s
 from utils.map_process import build_map_features, set_astar_path, LANE_NUM, ROUTE_LANE_NUM, get_dist
 
 
-GOAL_GUIDANCE_SCALE = 1.0
-PATH_GUIDANCE_SCALE = 10.0
+GOAL_GUIDANCE_SCALE = 200.0
+PATH_GUIDANCE_SCALE = 300.0
 
 
 class _CombinedGuidance:
@@ -81,7 +82,7 @@ class _CombinedGuidance:
         """Set A* path points in ego-centric standard frame. (M, 2)"""
         self._path = torch.tensor(path_ego, dtype=torch.float32).to(_device)
 
-    def __call__(self, x, t, cond, inputs, *args, **kwargs):
+    def __call__(self, x, t, cond, *args, **kwargs):
         inputs = kwargs.get('inputs')
         state_normalizer = kwargs.get('state_normalizer')
         observation_normalizer = kwargs.get('observation_normalizer')
@@ -101,14 +102,17 @@ class _CombinedGuidance:
         x_real = state_normalizer.inverse(x.reshape(B, P, -1, 4))
         inputs_real = observation_normalizer.inverse(inputs)
 
-        # --- Collision guidance (operates on denormalized data) ---
-        collision_energy = collision_guidance_fn(x_real, t, cond, inputs_real, *args, **kwargs)
+        ## skipping collision for now
+        energy = torch.tensor(0.0, device=x.device, requires_grad=True)
 
-        # --- Only apply path/goal guidance at late diffusion steps ---
-        if not (t < 0.1 and t > 0.005):
-            return collision_energy
+        # # --- Collision guidance (operates on denormalized data) ---
+        # collision_energy = collision_guidance_fn(x_real, t, cond, inputs_real, *args, **kwargs)
 
-        energy = collision_energy
+        # # --- Only apply path/goal guidance at late diffusion steps ---
+        # if not (t < 0.1 and t > 0.005):
+        #     return collision_energy
+
+        # energy = collision_energy
 
         # --- Path-following guidance: penalize distance from A* at each timestep ---
         if self._path is not None and len(self._path) >= 2:
@@ -156,7 +160,7 @@ def load_model(ckpt_path, args_path):
     global _model, _config, _observation_normalizer
 
     
-    _config = Config(args_path, guidance_fn=None)
+    _config = Config(args_path, guidance_fn=_combined_guidance)
     _observation_normalizer = _config.observation_normalizer
 
     _model = Diffusion_Planner(_config)
@@ -196,6 +200,10 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
 
     anchor_ego_state = np.array([ego_x, ego_y, ego_heading], dtype=np.float64)
     agent_states = []
+
+    print(f"CARLA angle (rad): {cur.angle:.3f}")
+    print(f"Standard heading: {ego_heading:.3f}")
+    print(f"Expected: car should be facing north (positive y in standard = negative y in CARLA)")
     
     if hasattr(obs, 'dyn_obs_clusters'):
         for actor_id, cluster in obs.dyn_obs_clusters.items():
@@ -271,17 +279,30 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
 
 def _parse_model_output(outputs, anchor_ego_state, cur):
     predictions = outputs['prediction'][0, 0].detach().cpu().numpy().astype(np.float64)
-    T = predictions.shape[0]
 
-    # print(f"[diffusion_adapter] Raw ego-centric predictions (first 5): {predictions[:5, :2]}")
+    print(f"Raw predictions x: min={predictions[:, 0].min():.2f}, max={predictions[:, 0].max():.2f}")
+    print(f"Raw predictions y: min={predictions[:, 1].min():.2f}, max={predictions[:, 1].max():.2f}")
+
+    T = predictions.shape[0]
 
     headings = np.arctan2(predictions[:, 3], predictions[:, 2])  # (T,)
     local_poses = np.stack([predictions[:, 0], predictions[:, 1], headings], axis=1)  # (T, 3)
 
-    anchor_matrix = _state_se2_array_to_transform_matrix(anchor_ego_state)
+    print(f"local_poses[0]: x={local_poses[0,0]:.2f}, y={local_poses[0,1]:.2f}")
+    print(f"local_poses[-1]: x={local_poses[-1,0]:.2f}, y={local_poses[-1,1]:.2f}")
+
+    # SE(2) composition: anchor @ local → global
+    
+    anchor_ego_state_fixed = anchor_ego_state.copy()
+    anchor_ego_state_fixed[2] = -anchor_ego_state[2]
+    anchor_matrix = _state_se2_array_to_transform_matrix(anchor_ego_state_fixed)
     pose_matrices = _state_se2_array_to_transform_matrix_batch(local_poses)
     global_matrices = anchor_matrix @ pose_matrices
     global_poses = _transform_matrix_to_state_se2_array_batch(global_matrices)
+
+    print(f"anchor: ({anchor_ego_state[0]:.2f}, {anchor_ego_state[1]:.2f}, h={np.rad2deg(anchor_ego_state[2]):.1f}°)")
+    print(f"global[0]: ({global_poses[0,0]:.2f}, {global_poses[0,1]:.2f})")
+    print(f"global[-1]: ({global_poses[-1,0]:.2f}, {global_poses[-1,1]:.2f})")
 
     trajectory = []
     for i in range(T):
@@ -293,28 +314,19 @@ def _parse_model_output(outputs, anchor_ego_state, cur):
             speed = MIN_SPEED
         else:
             prev_gx, prev_gy = global_poses[i-1, :2]
-            dt = 0.1  # 10Hz
+            dt = 0.1
             speed = max(MIN_SPEED, np.sqrt((gx-prev_gx)**2 + (gy-prev_gy)**2) / dt)
- 
+
         tp = TrajectoryPoint(Direction.FORWARD, carla_x, carla_y, speed, carla_heading_rad)
         trajectory.append(tp)
 
-    print(f"Anchor ego state (standard): {anchor_ego_state}")
-    print(f"Raw predictions ego frame (first 3): {predictions[:3, :2]}")
-    print(f"Global poses (first 3): {global_poses[:3, :2]}")
-    print(f"CARLA output (first 3): {[(t.x, t.y) for t in trajectory[:3]]}")
-    print(f"Cur CARLA pos: {cur.x}, {cur.y}")
+    print(f"First CARLA point: ({trajectory[0].x:.2f}, {trajectory[0].y:.2f})")
+    print(f"Last CARLA point: ({trajectory[-1].x:.2f}, {trajectory[-1].y:.2f})")
+    print(f"Cur: ({cur.x:.2f}, {cur.y:.2f})")
 
-    h = anchor_ego_state[2]
-    px, py = predictions[0, :2]
-    manual_x = anchor_ego_state[0] + px*np.cos(h) - py*np.sin(h)
-    manual_y = anchor_ego_state[1] + px*np.sin(h) + py*np.cos(h)
-    print(f"Manual transform: ({manual_x}, {manual_y})")
-    print(f"SE2 transform: {global_poses[0, :2]}")
-    
     return trajectory
     
-def diffusion_plan(
+def diffusion_plan_debug(
     cur: 'TrajectoryPoint',
     destination: 'TrajectoryPoint',
     obs):
@@ -326,7 +338,18 @@ def diffusion_plan(
     if _map_processor._global_path is None:
         return []
     
-    path = _map_processor._global_path  # (M, 2) standard frame
+    original_path = _map_processor._global_path  # (M, 2) standard frame
+
+    cur_std_x, cur_std_y, _ = carla_transform_to_standard(cur.x, cur.y, 0.0)
+    dists = np.linalg.norm(original_path - np.array([cur_std_x, cur_std_y]), axis=1)
+    closest = int(np.argmin(dists))
+
+    ref_dx = original_path[1][0] - original_path[0][0]
+    ref_dy = original_path[1][1] - original_path[0][1]
+    ref_speed = max(MIN_SPEED, np.sqrt(ref_dx**2 + ref_dy**2) / 0.1)
+
+    path = original_path[closest:]
+
     
     trajectory = []
     for i in range(len(path)):
@@ -334,13 +357,12 @@ def diffusion_plan(
         carla_x, carla_y, _ = standard_to_carla(sx, sy, 0.0)
         
         if i == 0:
-            speed = cur.speed
+            speed = cur.speed if cur.speed > MIN_SPEED else ref_speed
             angle = cur.angle
         else:
             prev_sx, prev_sy = path[i-1]
             dx = sx - prev_sx
             dy = sy - prev_sy
-            import numpy as np
             angle_std = np.arctan2(dy, dx)
             _, _, carla_yaw_deg = standard_to_carla(0, 0, np.rad2deg(angle_std))
             angle = np.deg2rad(carla_yaw_deg)
@@ -349,17 +371,10 @@ def diffusion_plan(
         tp = TrajectoryPoint(Direction.FORWARD, carla_x, carla_y, speed, angle)
         trajectory.append(tp)
     
-    print(f"[debug] Feeding A* path directly: {len(trajectory)} points")
-    print(f"[debug] First wp: ({trajectory[0].x:.2f}, {trajectory[0].y:.2f})")
-    print(f"[debug] Last wp: ({trajectory[-1].x:.2f}, {trajectory[-1].y:.2f})")
-    print(f"[debug] Cur: ({cur.x:.2f}, {cur.y:.2f})")
     
     return trajectory
 
-def diffusion_plan_real(
-    cur: 'TrajectoryPoint',
-    destination: 'TrajectoryPoint',
-    obs):
+def diffusion_plan( cur, destination, obs, world):
     global _model
 
     ## failure handling
@@ -377,10 +392,15 @@ def diffusion_plan_real(
 
         # Set goal in ego-centric standard frame for guidance
         dest_x, dest_y, _ = carla_transform_to_standard(destination.x, destination.y, 0.0)
-        anchor_matrix = _state_se2_array_to_transform_matrix(anchor_ego_state)
+        anchor_ego_state_fixed = anchor_ego_state.copy()
+        anchor_ego_state_fixed[2] = -anchor_ego_state[2]
+        anchor_matrix = _state_se2_array_to_transform_matrix(anchor_ego_state_fixed)
         anchor_inv = np.linalg.inv(anchor_matrix)
         dest_local = anchor_inv @ np.array([dest_x, dest_y, 1.0])
         _combined_guidance.set_goal(float(dest_local[0]), float(dest_local[1]))
+
+        print(f"dest local ego: ({dest_local[0]:.2f}, {dest_local[1]:.2f})")
+        print(f"expected: x>0 (ahead), y>0 (left, spot is to the left)")
 
         # Set A* path in ego-centric standard frame for path-following guidance
         from utils.map_process import _map_processor
@@ -393,6 +413,7 @@ def diffusion_plan_real(
             _combined_guidance.set_path(path_ego)
 
         inputs = _build_model_inputs(cur, obs)
+        _draw_route_lanes_debug(world, anchor_ego_state, inputs['route_lanes'][0])
 
         if _observation_normalizer is not None:
             inputs = _observation_normalizer(inputs)
@@ -401,6 +422,11 @@ def diffusion_plan_real(
             _, outputs = _model(inputs)
 
         trajectory = _parse_model_output(outputs, anchor_ego_state, cur)
+
+        _draw_ego_frame_debug(world, anchor_ego_state, dest_local, path_ego)
+        
+        for tp in trajectory:
+            tp.speed = np.clip(tp.speed, MIN_SPEED, MAX_SPEED)
 
         return trajectory
 
@@ -414,24 +440,99 @@ def init_scenario(cur: TrajectoryPoint, destination: TrajectoryPoint, obs):
     global _astar_path_set, _history_buffer
     _history_buffer = AgentHistoryBuffer()
 
+    from utils.map_process import set_destination
+    set_destination(destination.x, destination.y)
+
     print("[diffusion_adapter] Running Hybrid A* for route prior...")
     astar_trajectory = plan_hybrid_a_star(cur, destination, obs)
  
     if astar_trajectory:
         set_astar_path(astar_trajectory)
         _astar_path_set = True
-        print(f"[diffusion_adapter] Route prior set: {len(astar_trajectory)} waypoints")
-        print(f"A* first point CARLA: ({astar_trajectory[0].x:.2f}, {astar_trajectory[0].y:.2f})")
-        print(f"A* last point CARLA: ({astar_trajectory[-1].x:.2f}, {astar_trajectory[-1].y:.2f})")
-        print(f"Cur CARLA: ({cur.x:.2f}, {cur.y:.2f})")
-        print(f"Destination CARLA: ({destination.x:.2f}, {destination.y:.2f})")
         
     else:
         print("[diffusion_adapter] WARNING: Hybrid A* failed, route_lanes will be zeros")
         _astar_path_set = False
 
+def world_to_ego(wx, wy, x0, y0, h):
+    dx, dy = wx - x0, wy - y0
+    ex =  np.cos(h) * dx + np.sin(h) * dy
+    ey = -np.sin(h) * dx + np.cos(h) * dy
+    return ex, ey
+
+# Inverse ego→world: rotate by +h then translate
+def ego_to_world(ex, ey, x0, y0, h):
+    wx = x0 + np.cos(h) * ex - np.sin(h) * ey
+    wy = y0 + np.sin(h) * ex + np.cos(h) * ey
+    return wx, wy
+
+def _draw_route_lanes_debug(world, anchor_ego_state, route_lanes_tensor):
+    route_lanes_np = route_lanes_tensor.cpu().numpy() if hasattr(route_lanes_tensor, 'cpu') else route_lanes_tensor
+    
+    for lane_idx in range(min(12, route_lanes_np.shape[0])):
+        lane = route_lanes_np[lane_idx]  # (20, 12)
+        
+        # Skip empty lanes
+        if np.abs(lane[:, :2]).sum() < 1e-6:
+            continue
+            
+        for pt_idx in range(0, lane.shape[0], 2):  # every other point
+
+            
+            ego_x, ego_y = float(lane[pt_idx, 0]), float(lane[pt_idx, 1])
+            
+            h = anchor_ego_state[2]
+            std_x = anchor_ego_state[0] + ego_x * np.cos(h) - ego_y * np.sin(h)
+            std_y = anchor_ego_state[1] + ego_x * np.sin(h) + ego_y * np.cos(h)
+            
+            carla_x, carla_y, _ = standard_to_carla(std_x, std_y, 0.0)
+            
+            color = carla.Color(r=0, g=255, b=0) if lane_idx == 0 else carla.Color(r=255, g=165, b=0)
+            world.debug.draw_point(
+                carla.Location(x=carla_x, y=carla_y, z=0.5),
+                size=0.1,
+                color=color,
+                life_time=1.0
+            )
 
 
+            color2 = carla.Color(r=200, g=35, b=0)
+            if pt_idx == 0 and lane_idx == 0:
+                world.debug.draw_string(
+                    carla.Location(x=carla_x, y=carla_y, z=1.0),
+                    f'R{lane_idx}',
+                    color=color2,
+                    life_time=0.1
+                )
 
-
-
+def _draw_ego_frame_debug(world, anchor_ego_state, dest_local, path_ego):
+    """Draw destination and path in ego frame, transformed back to world for visualization."""
+    h = -anchor_ego_state[2]
+    x0, y0 = anchor_ego_state[0], anchor_ego_state[1]
+    
+    def ego_to_world_carla(ex, ey):
+        # ego → standard
+        std_x = x0 + np.cos(h) * ex - np.sin(h) * ey
+        std_y = y0 + np.sin(h) * ex + np.cos(h) * ey
+        # standard → carla
+        cx, cy, _ = standard_to_carla(std_x, std_y, 0.0)
+        return cx, cy
+    
+    # Draw destination (red)
+    dx, dy = ego_to_world_carla(dest_local[0], dest_local[1])
+    world.debug.draw_string(
+        carla.Location(x=dx, y=dy, z=1.0),
+        'GOAL',
+        color=carla.Color(r=255, g=0, b=0),
+        life_time=1.0
+    )
+    
+    # Draw path points (blue)
+    for i in range(0, len(path_ego), 5):
+        px, py = ego_to_world_carla(path_ego[i, 0], path_ego[i, 1])
+        world.debug.draw_point(
+            carla.Location(x=px, y=py, z=0.5),
+            size=0.1,
+            color=carla.Color(r=0, g=0, b=255),
+            life_time=1.0
+        )

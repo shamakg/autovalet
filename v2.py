@@ -20,13 +20,13 @@ from scipy.ndimage import binary_dilation
 def kmph_to_mps(speed): return speed/3.6
 def mps_to_kmph(speed): return speed*3.6
 
-DESTINATION_THRESHOLD = 0.2
+DESTINATION_THRESHOLD = 0.3 #0.2
 REPLAN_THRESHOLD = 2
 PERCEPTION_LATENCY = 0.5 # seconds
 LOOKAHEAD = 3
 TRAJECTORY_EXTENSION = 5
 MAX_ACCELERATION = 1
-MAX_SPEED = kmph_to_mps(10)
+MAX_SPEED = kmph_to_mps(8)
 MIN_SPEED = kmph_to_mps(2)
 STAGNATION_HISTORY_LENGTH = 100
 STAGNATION_THRESHOLD = 0.1
