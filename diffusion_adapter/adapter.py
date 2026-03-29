@@ -102,17 +102,11 @@ class _CombinedGuidance:
         x_real = state_normalizer.inverse(x.reshape(B, P, -1, 4))
         inputs_real = observation_normalizer.inverse(inputs)
 
-        ## skipping collision for now
         energy = torch.tensor(0.0, device=x.device, requires_grad=True)
 
         # # --- Collision guidance (operates on denormalized data) ---
-        # collision_energy = collision_guidance_fn(x_real, t, cond, inputs_real, *args, **kwargs)
-
-        # # --- Only apply path/goal guidance at late diffusion steps ---
-        # if not (t < 0.1 and t > 0.005):
-        #     return collision_energy
-
-        # energy = collision_energy
+        # kwargs_no_inputs = {k: v for k, v in kwargs.items() if k != 'inputs'}
+        # energy = collision_guidance_fn(x_real, t, cond, inputs_real, *args, **kwargs_no_inputs)
 
         # --- Path-following guidance: penalize distance from A* at each timestep ---
         if self._path is not None and len(self._path) >= 2:
@@ -222,9 +216,7 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
             std_x, std_y, std_heading = carla_transform_to_standard(
                 mean[0], mean[1], np.rad2deg(yaw)
             )
-            _, _, std_heading = carla_transform_to_standard(0, 0, np.rad2deg(cur.angle))
-            std_vx = cur.speed * np.cos(std_heading)
-            std_vy = cur.speed * np.sin(std_heading)
+            std_vx, std_vy = carla_velocity_to_standard(vx_carla, vy_carla)
 
             agent_states.append(AgentState(
                 actor_id = actor_id,

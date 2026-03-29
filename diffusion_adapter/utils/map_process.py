@@ -219,6 +219,7 @@ class MapProcessor:
         # Full A* path in standard global frame: (M, 2)
         self._global_path: Optional[np.ndarray] = None
         self._destination_lane = None
+        self._dest_y_std = None
  
     def set_astar_path(self, trajectory):
         """
@@ -246,8 +247,10 @@ class MapProcessor:
             row_x = ROW2_X
         else:
             row_x = ROW3_X
-        
+
         self._destination_lane = make_approach_and_branch(AISLE_23_X, dest_y, row_x)
+        # Store destination Y in standard frame for aisle truncation
+        _, self._dest_y_std, _ = carla_transform_to_standard(dest_x, dest_y, 0.0)
  
     def _extract_segments(self, closest: int, path: np.ndarray):
         """
@@ -288,46 +291,33 @@ class MapProcessor:
 
         ego_xy = anchor_ego_state[:2]
 
-        # 1. Static lanes
+        # 1. Lanes — fill with A* path segments (model attends to these via cross-attention)
         lane_idx = 0
-        for tag, polyline in _STATIC_LANES:
-            if lane_idx >= LANE_NUM:
-                break
-            dists = np.linalg.norm(polyline - ego_xy, axis=1)
-            if dists.min() > 40.0:
-                continue
-            lanes_output[lane_idx] = _build_lane_feature(polyline, anchor_ego_state)
-            lane_idx += 1
-            if tag in ('aisle_23', 'aisle_entry'):
-                for offset in [-LANE_WIDTH, LANE_WIDTH]:
-                    if lane_idx >= LANE_NUM:
-                        break
-                    shifted = _offset_polyline(polyline, offset)
-                    lanes_output[lane_idx] = _build_lane_feature(shifted, anchor_ego_state)
-                    lane_idx += 1
-
-        if self._destination_lane is not None:
-            dists = np.linalg.norm(self._destination_lane - ego_xy, axis=1)
-            if dists.min() <= 40.0 and lane_idx < LANE_NUM:
-                lanes_output[lane_idx] = _build_lane_feature(self._destination_lane, anchor_ego_state)
+        if self._global_path is not None and len(self._global_path) >= 2:
+            path = self._global_path
+            N = len(path)
+            step = max(1, N // LANE_NUM)
+            for start in range(0, N, step):
+                end = min(N, start + LANE_LEN)
+                if end - start < 2 or lane_idx >= LANE_NUM:
+                    break
+                seg = _interpolate_polyline(path[start:end], LANE_LEN)
+                lanes_output[lane_idx] = _build_lane_feature(seg, anchor_ego_state)
                 lane_idx += 1
 
-        # 2. Route lanes — just use full A* path split into segments
-        if self._global_path is None or len(self._global_path) < 2:
-            return lanes_output, route_lanes_output
-
-        path = self._global_path
-
-        N = len(path)
-        step = max(1, N // ROUTE_LANE_NUM)
+        # 2. Route lanes — same A* path segments
         route_idx = 0
-        for start in range(0, N, step):
-            end = min(N, start + LANE_LEN)
-            if end - start < 2 or route_idx >= ROUTE_LANE_NUM:
-                break
-            seg = _interpolate_polyline(path[start:end], LANE_LEN)
-            route_lanes_output[route_idx] = _build_lane_feature(seg, anchor_ego_state)
-            route_idx += 1
+        if self._global_path is not None and len(self._global_path) >= 2:
+            path = self._global_path
+            N = len(path)
+            step = max(1, N // ROUTE_LANE_NUM)
+            for start in range(0, N, step):
+                end = min(N, start + LANE_LEN)
+                if end - start < 2 or route_idx >= ROUTE_LANE_NUM:
+                    break
+                seg = _interpolate_polyline(path[start:end], LANE_LEN)
+                route_lanes_output[route_idx] = _build_lane_feature(seg, anchor_ego_state)
+                route_idx += 1
 
         return lanes_output, route_lanes_output
  

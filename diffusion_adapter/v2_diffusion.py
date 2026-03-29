@@ -43,6 +43,7 @@ REPLAN_INTERVAL = 1  # replan every tick as the original paper does https://arxi
 DIFFUSION_LOOKAHEAD = 10  # lookahead steps for pure-pursuit (overrides v2.LOOKAHEAD=3 for the 80-step diffusion trajectory)
 LOOKAHEAD_DIST_M = 3.0
 LOOKAHEAD = 3
+DESTINATION_THRESHOLD = 0.4
 
 
 class CarlaCameraSensor():
@@ -417,7 +418,7 @@ class Car():
         near_end_of_trajectory = last_wp is not None and cur.distance(last_wp) < 0.5
             
 
-        if self.mode == Mode.PARKED or (distance_to_destination < DESTINATION_THRESHOLD and _remaining_path_length(trajectory, ti) < 3.0):
+        if self.mode == Mode.PARKED or (distance_to_destination < DESTINATION_THRESHOLD): #and _remaining_path_length(trajectory, ti) < 3.0):
             self.mode = Mode.PARKED
             return STOP_CONTROL
 
