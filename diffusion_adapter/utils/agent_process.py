@@ -24,24 +24,25 @@ from nuplan.common.actor_state.tracked_objects_types import TrackedObjectType
 
 from diffusion_planner.data_process.agent_process import agent_past_process
 
-# ---------------------------------------------------------------------------
-# Constants matching DataProcessor
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- 
+# Constants matching DataProcessor, do not change
+
 NUM_AGENTS     = 32
 NUM_STATIC     = 5
 NUM_PAST_STEPS = 21   # current frame + 20 history frames (2s @ 10Hz)
 MAX_PED_BIKE   = 10
 
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
 # Agent state snapshot
-# ---------------------------------------------------------------------------
 
 class AgentState:
     """Snapshot of a single actor at one timestep, in standard global frame."""
     __slots__ = ('actor_id', 'x', 'y', 'heading', 'vx', 'vy', 'width', 'length', 'agent_type')
 
     def __init__(self, actor_id, x, y, heading, vx, vy, width, length, agent_type='vehicle'):
+        ### Data suite to be stored for each obs agent
+
         self.actor_id   = actor_id
         self.x          = x
         self.y          = y
@@ -54,8 +55,8 @@ class AgentState:
 
 
 # ---------------------------------------------------------------------------
+
 # History buffer
-# ---------------------------------------------------------------------------
 
 class AgentHistoryBuffer:
     """
@@ -64,24 +65,23 @@ class AgentHistoryBuffer:
     """
 
     def __init__(self, max_history: int = NUM_PAST_STEPS):
-        self.max_history = max_history
-        # agent_id -> deque of AgentState (oldest first, newest last)
+        self.max_history = max_history ## maximum history to be stored
+        # deque of AgentState (oldest first, newest last), easily retrievable by agent ID
         self._histories: Dict[int, deque] = {}
 
     def update(self, agent_states: List[AgentState]):
         """
-        Add a new frame of agent observations.
-
-        :param agent_states: List of AgentState for all visible agents this tick.
+        Add new frame of agent observations.
         """
+        ## gets a list of agent_states, each with a actor_id (get one for each actor)
         for state in agent_states:
-            aid = state.actor_id
-            if aid not in self._histories:
-                self._histories[aid] = deque(maxlen=self.max_history)
-            self._histories[aid].append(state)
+            ## add new agent if never seen (i guess if new object enters map limits)
+            if state.actor_id not in self._histories:
+                self._histories[state.actor_id] = deque(maxlen=self.max_history)
+            self._histories[state.actor_id].append(state)
 
     def get_histories(self) -> Dict[int, List[AgentState]]:
-        return {aid: list(buf) for aid, buf in self._histories.items()}
+        return {actor_id: list(buf) for actor_id, buf in self._histories.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -114,21 +114,23 @@ def _histories_to_array_list(histories: Dict[int, List[AgentState]]):
     num_agents = len(agent_ids)
     dim        = AgentInternalIndex.dim()
 
-    # Build (NUM_PAST_STEPS, num_agents, dim) array
+    # Build empty array for past states, limited by num past steps
     array = np.zeros((NUM_PAST_STEPS, num_agents, dim), dtype=np.float64)
     types = []  # tracked object type per agent (from most recent state)
 
-    for col, aid in enumerate(agent_ids):
-        states = histories[aid]
+    for col, actor_id in enumerate(agent_ids):
+        states = histories[actor_id]
         n      = len(states)
+        ### get the type of this agent
         types.append(_agent_type_to_tracked_object_type(states[-1].agent_type))
 
         for step in range(NUM_PAST_STEPS):
-            # Map step index to states list (step 0 = oldest, step -1 = newest)
+            # Map step index to states list (step 0 = oldest, step -1 = newest) (go from old to new)
             states_idx = n - (NUM_PAST_STEPS - step)
             s = states[max(0, states_idx)]  # clamp — pad with oldest if not enough history
 
-            array[step, col, AgentInternalIndex.track_token()] = float(aid)
+            ### store the data suite for history data
+            array[step, col, AgentInternalIndex.track_token()] = float(actor_id)
             array[step, col, AgentInternalIndex.x()]           = s.x
             array[step, col, AgentInternalIndex.y()]           = s.y
             array[step, col, AgentInternalIndex.heading()]     = s.heading
@@ -138,14 +140,14 @@ def _histories_to_array_list(histories: Dict[int, List[AgentState]]):
             array[step, col, AgentInternalIndex.length()]      = s.length
 
         if col == 0:
-            print(f"Agent {aid} last step raw array: {array[-1, col, :]}")
+            print(f"Agent {actor_id} last step raw array: {array[-1, col, :]}")
             print(f"  x at idx {AgentInternalIndex.x()}: {array[-1, col, AgentInternalIndex.x()]} (expected {states[-1].x})")
             print(f"  y at idx {AgentInternalIndex.y()}: {array[-1, col, AgentInternalIndex.y()]} (expected {states[-1].y})")
             print(f"  vx at idx {AgentInternalIndex.vx()}: {array[-1, col, AgentInternalIndex.vx()]} (expected {states[-1].vx})")
 
     # Convert to list of per-timestep arrays
     array_list = [array[t] for t in range(NUM_PAST_STEPS)]
-    types_list = [types] * NUM_PAST_STEPS  # same types at every timestep
+    types_list = [types] * NUM_PAST_STEPS # just duplicate
 
     return array_list, types_list[-1]  # agent_past_process wants types at last frame
 
@@ -154,43 +156,43 @@ def _histories_to_array_list(histories: Dict[int, List[AgentState]]):
 # Public API
 # ---------------------------------------------------------------------------
 
-def build_neighbor_agents_past(
-    history_buffer: AgentHistoryBuffer,
-    anchor_ego_state: np.ndarray,
-    num_agents: int = NUM_AGENTS,
-) -> np.ndarray:
-    """
-    Build the neighbor_agents_past tensor expected by DiffusionPlanner.
+# def build_neighbor_agents_past(
+#     history_buffer: AgentHistoryBuffer,
+#     anchor_ego_state: np.ndarray,
+#     num_agents: int = NUM_AGENTS,
+# ) -> np.ndarray:
+#     """
+#     Build the neighbor_agents_past tensor expected by DiffusionPlanner.
 
-    :param history_buffer: AgentHistoryBuffer with recent observations
-    :param anchor_ego_state: np.ndarray (3,) — current ego [x, y, heading] in standard frame
-    :param num_agents: max agents to include
-    :return: np.ndarray (num_agents, NUM_PAST_STEPS, 11)
-    """
-    histories = history_buffer.get_histories()
-    array_list, agent_types = _histories_to_array_list(histories)
+#     :param history_buffer: AgentHistoryBuffer with recent observations
+#     :param anchor_ego_state: np.ndarray (3,) — current ego [x, y, heading] in standard frame
+#     :param num_agents: max agents to include
+#     :return: np.ndarray (num_agents, NUM_PAST_STEPS, 11)
+#     """
+#     histories = history_buffer.get_histories()
+#     array_list, agent_types = _histories_to_array_list(histories)
 
-    # agent_past_process expects ego_agent_past=None at inference
-    _, agents, _, static_objects = agent_past_process(
-        past_ego_states        = None,
-        past_tracked_objects   = array_list,
-        tracked_objects_types  = [agent_types] * NUM_PAST_STEPS,
-        num_agents             = num_agents,
-        static_objects         = np.zeros((0, 5), dtype=np.float64),
-        static_objects_types   = [],
-        num_static             = NUM_STATIC,
-        max_ped_bike           = MAX_PED_BIKE,
-        anchor_ego_state       = anchor_ego_state,
-    )
+#     # agent_past_process expects ego_agent_past=None at inference
+#     _, agents, _, static_objects = agent_past_process(
+#         past_ego_states        = None,
+#         past_tracked_objects   = array_list,
+#         tracked_objects_types  = [agent_types] * NUM_PAST_STEPS,
+#         num_agents             = num_agents,
+#         static_objects         = np.zeros((0, 5), dtype=np.float64),
+#         static_objects_types   = [],
+#         num_static             = NUM_STATIC,
+#         max_ped_bike           = MAX_PED_BIKE,
+#         anchor_ego_state       = anchor_ego_state,
+#     )
 
-    return agents  # (num_agents, NUM_PAST_STEPS, 11)
+#     return agents  # (num_agents, NUM_PAST_STEPS, 11)
 
 
-def build_static_objects(num_static: int = NUM_STATIC) -> np.ndarray:
-    """
-    Returns zeroed static objects tensor.
-    CARLA doesn't expose cones/barriers easily so we leave this empty for now.
+# def build_static_objects(num_static: int = NUM_STATIC) -> np.ndarray:
+#     """
+#     Returns zeroed static objects tensor.
+#     CARLA doesn't expose cones/barriers easily so we leave this empty for now.
 
-    :return: np.ndarray (num_static, 10)
-    """
-    return np.zeros((num_static, 10), dtype=np.float32)
+#     :return: np.ndarray (num_static, 10)
+#     """
+#     return np.zeros((num_static, 10), dtype=np.float32)

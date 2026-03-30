@@ -398,6 +398,9 @@ class Car():
         self.obs.dyn_obs_clusters = new_clusters
         self.obs.obs = self.obs.static_obs + dyn_obs
 
+        print(f"Total obstacles detected: {len(obstacles)}")
+        print(f"dyn_obs_clusters size: {len(self.obs.dyn_obs_clusters)}")
+
     def control(self):
         if self.mode == Mode.STALLED or self.mode == Mode.FAILED: return STOP_CONTROL
 

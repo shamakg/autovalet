@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import imageio.v3 as iio
 
 SCENARIOS = [
-    # (17, [16, 18]),
+    (17, [16, 18]),
     (18, [17, 19]),
     (19, [18, 20]),
     (20, [19, 21]),

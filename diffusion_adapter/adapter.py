@@ -42,6 +42,8 @@ from diffusion_planner.data_process.utils import (
     _state_se2_array_to_transform_matrix,
     _state_se2_array_to_transform_matrix_batch,
     _transform_matrix_to_state_se2_array_batch,
+    _global_state_se2_array_to_local,
+    _global_velocity_to_local,
 )
 
 from utils.coord_utils import (
@@ -52,15 +54,15 @@ from utils.coord_utils import (
 from utils.agent_process import (
     AgentHistoryBuffer,
     AgentState,
-    build_neighbor_agents_past,
-    build_static_objects,
+    NUM_AGENTS,
+    NUM_PAST_STEPS,
 )
 from v2 import TrajectoryPoint, Direction, MIN_SPEED, MAX_SPEED, plan_hybrid_a_star
 from utils.map_process import build_map_features, set_astar_path, LANE_NUM, ROUTE_LANE_NUM, get_dist
 
 
 GOAL_GUIDANCE_SCALE = 3000.0
-PATH_GUIDANCE_SCALE = 2000.0
+PATH_GUIDANCE_SCALE = 2000.0 # tune these
 
 
 class _CombinedGuidance:
@@ -102,11 +104,11 @@ class _CombinedGuidance:
         x_real = state_normalizer.inverse(x.reshape(B, P, -1, 4))
         inputs_real = observation_normalizer.inverse(inputs)
 
-        energy = torch.tensor(0.0, device=x.device, requires_grad=True)
+        # energy = torch.tensor(0.0, device=x.device, requires_grad=True)
 
-        # # --- Collision guidance (operates on denormalized data) ---
-        # kwargs_no_inputs = {k: v for k, v in kwargs.items() if k != 'inputs'}
-        # energy = collision_guidance_fn(x_real, t, cond, inputs_real, *args, **kwargs_no_inputs)
+        # --- Collision guidance (operates on denormalized data) ---
+        kwargs_no_inputs = {k: v for k, v in kwargs.items() if k != 'inputs'}
+        energy = collision_guidance_fn(x_real, t, cond, inputs_real, *args, **kwargs_no_inputs)
 
         # --- Path-following guidance: penalize distance from A* at each timestep ---
         if self._path is not None and len(self._path) >= 2:
@@ -182,6 +184,29 @@ def load_model(ckpt_path, args_path):
     print(f"[diffusion_adapter] Model loaded on {_device}")
 
 
+def _build_agent_feature(state: AgentState, anchor_ego_state: np.ndarray, x0, y0, h) -> np.ndarray:
+    # Position in ego frame using world_to_ego
+    ex, ey = world_to_ego(state.x, state.y, x0, y0, h)
+    
+    # Heading in ego frame
+    local_heading = state.heading - h
+    
+    # Velocity in ego frame
+    vx_ego =  np.cos(h) * state.vx + np.sin(h) * state.vy
+    vy_ego = -np.sin(h) * state.vx + np.cos(h) * state.vy
+
+    type_vec = [1.0, 0.0, 0.0]  # vehicle by default
+    if state.agent_type == 'pedestrian':
+        type_vec = [0.0, 1.0, 0.0]
+
+    return np.array([
+        ex, ey,
+        np.cos(local_heading), np.sin(local_heading),
+        vx_ego, vy_ego,
+        state.width, state.length,
+        *type_vec
+    ], dtype=np.float32)
+
 
 def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
     """
@@ -193,13 +218,12 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
     :return: dict of tensors ready for the model
     """
     ego_x, ego_y, ego_heading = carla_transform_to_standard(cur.x, cur.y, np.rad2deg(cur.angle))
+    
 
     anchor_ego_state = np.array([ego_x, ego_y, ego_heading], dtype=np.float64)
+    h = anchor_ego_state[2]
+    x0, y0 = anchor_ego_state[0], anchor_ego_state[1]
     agent_states = []
-
-    print(f"CARLA angle (rad): {cur.angle:.3f}")
-    print(f"Standard heading: {ego_heading:.3f}")
-    print(f"Expected: car should be facing north (positive y in standard = negative y in CARLA)")
     
     if hasattr(obs, 'dyn_obs_clusters'):
         for actor_id, cluster in obs.dyn_obs_clusters.items():
@@ -212,10 +236,14 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
             else:
                 yaw = cluster.get('yaw', 0.0)  # use true orientation for parked cars
 
-            # Convert to standard frame
-            std_x, std_y, std_heading = carla_transform_to_standard(
-                mean[0], mean[1], np.rad2deg(yaw)
-            )
+            # Account for bounding box center offset
+            cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+            bb_offset_x = bb.location.x * cos_y - bb.location.y * sin_y
+            bb_offset_y = bb.location.x * sin_y + bb.location.y * cos_y
+            actual_x = mean[0] + bb_offset_x
+            actual_y = mean[1] + bb_offset_y
+
+            std_x, std_y, std_heading = carla_transform_to_standard(actual_x, actual_y, np.rad2deg(yaw))
             std_vx, std_vy = carla_velocity_to_standard(vx_carla, vy_carla)
 
             agent_states.append(AgentState(
@@ -231,10 +259,67 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
             ))
 
 
-    ## history logic for all external agents
+    # Update history buffer with dynamic agents
     _history_buffer.update(agent_states)
-    # neighbor_agents_past = build_neighbor_agents_past(_history_buffer, anchor_ego_state)
-    neighbor_agents_past = np.zeros((32, 21, 11), dtype=np.float32)
+
+    neighbor_agents_past = np.zeros((NUM_AGENTS, NUM_PAST_STEPS, 11), dtype=np.float32)
+    slot = 0
+
+    # Dynamic agents: transform each historical state directly to current ego frame
+    for aid, history in _history_buffer.get_histories().items():
+        if slot >= NUM_AGENTS:
+            break
+        for t_idx in range(NUM_PAST_STEPS):
+            hist_idx = len(history) - (NUM_PAST_STEPS - t_idx)
+            state = history[max(0, hist_idx)]
+            neighbor_agents_past[slot, t_idx] = _build_agent_feature(state, anchor_ego_state, x0, y0, h)
+        slot += 1
+
+    # Parked cars: stationary snapshot repeated for all timesteps (lower priority)
+    if hasattr(obs, 'parked_cars'):
+        for vehicle in obs.parked_cars:
+            if slot >= NUM_AGENTS:
+                break
+            t = vehicle.get_transform()
+            dist = np.sqrt((t.location.x - cur.x)**2 + (t.location.y - cur.y)**2)
+            if dist > 30.0:
+                continue
+            std_x, std_y, std_heading = carla_transform_to_standard(
+                t.location.x, t.location.y, t.rotation.yaw
+            )
+            bb = vehicle.bounding_box
+            # Apply BB center offset (same as dynamic agents)
+            yaw_rad = np.deg2rad(t.rotation.yaw)
+            cos_y, sin_y = np.cos(yaw_rad), np.sin(yaw_rad)
+            bb_offset_x = bb.location.x * cos_y - bb.location.y * sin_y
+            bb_offset_y = bb.location.x * sin_y + bb.location.y * cos_y
+            std_cx, std_cy, _ = carla_transform_to_standard(
+                t.location.x + bb_offset_x, t.location.y + bb_offset_y, t.rotation.yaw
+            )
+            parked_state = AgentState(
+                actor_id=vehicle.id, x=std_cx, y=std_cy, heading=std_heading,
+                vx=0.0, vy=0.0,
+                width=float(bb.extent.y * 2), length=float(bb.extent.x * 2),
+                agent_type='vehicle',
+            )
+            snapshot = _build_agent_feature(parked_state, anchor_ego_state, x0, y0, h)
+            neighbor_agents_past[slot] = np.tile(snapshot, (NUM_PAST_STEPS, 1))
+            slot += 1
+
+    # print(f"[agents] Non-zero slots: {(np.abs(neighbor_agents_past).sum(axis=(1,2)) > 0).sum()} / {NUM_AGENTS}")
+    
+    for slot_idx in range(NUM_AGENTS):
+        last_step = neighbor_agents_past[slot_idx, -1]
+        if np.abs(last_step).sum() < 1e-6:
+            continue
+        ex, ey = last_step[0], last_step[1]
+        vx, vy = last_step[4], last_step[5]
+        w, l = last_step[6], last_step[7]
+        speed = np.sqrt(vx**2 + vy**2)
+        # Transform back to world for visualization
+        wx, wy = ego_to_world(ex, ey, x0, y0, h)
+        cx, cy, _ = standard_to_carla(wx, wy, 0.0)
+        # print(f"  agent[{slot_idx}]: ego=({ex:.1f},{ey:.1f}) world=({cx:.1f},{cy:.1f}) speed={speed:.2f} size=({w:.1f}x{l:.1f})")
 
     # --- Static objects (none from ObstacleMap, leave zeros) ---
     # static_objects = build_static_objects()
@@ -242,7 +327,7 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
 
     lanes, route_lanes = build_map_features(anchor_ego_state)
 
-    print("Route lane 0 points (ego frame x,y):", route_lanes[0, :5, :2])
+    # print("Route lane 0 points (ego frame x,y):", route_lanes[0, :5, :2])
 
     dist_along = get_dist(anchor_ego_state)
     std_vx, std_vy = carla_velocity_to_standard(cur.speed * np.cos(cur.angle), cur.speed * np.sin(cur.angle))
@@ -257,7 +342,8 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
     ], dtype=np.float32)
 
     data = {
-        'neighbor_agents_past': neighbor_agents_past[:, -21:],  # last 21 steps
+        # 'neighbor_agents_past': neighbor_agents_past[:, -21:],  # last 21 steps
+        'neighbor_agents_past': neighbor_agents_past[:, -21:],
         'ego_current_state':    ego_current_state,
         'static_objects':       static_objects,
         'lanes':                lanes,
@@ -274,16 +360,16 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
 def _parse_model_output(outputs, anchor_ego_state, cur):
     predictions = outputs['prediction'][0, 0].detach().cpu().numpy().astype(np.float64)
 
-    print(f"Raw predictions x: min={predictions[:, 0].min():.2f}, max={predictions[:, 0].max():.2f}")
-    print(f"Raw predictions y: min={predictions[:, 1].min():.2f}, max={predictions[:, 1].max():.2f}")
+    # print(f"Raw predictions x: min={predictions[:, 0].min():.2f}, max={predictions[:, 0].max():.2f}")
+    # print(f"Raw predictions y: min={predictions[:, 1].min():.2f}, max={predictions[:, 1].max():.2f}")
 
     T = predictions.shape[0]
 
     headings = np.arctan2(predictions[:, 3], predictions[:, 2])  # (T,)
     local_poses = np.stack([predictions[:, 0], predictions[:, 1], headings], axis=1)  # (T, 3)
 
-    print(f"local_poses[0]: x={local_poses[0,0]:.2f}, y={local_poses[0,1]:.2f}")
-    print(f"local_poses[-1]: x={local_poses[-1,0]:.2f}, y={local_poses[-1,1]:.2f}")
+    # print(f"local_poses[0]: x={local_poses[0,0]:.2f}, y={local_poses[0,1]:.2f}")
+    # print(f"local_poses[-1]: x={local_poses[-1,0]:.2f}, y={local_poses[-1,1]:.2f}")
 
     # SE(2) composition: anchor @ local → global
     
@@ -294,9 +380,9 @@ def _parse_model_output(outputs, anchor_ego_state, cur):
     global_heading = h0 + local_poses[:, 2]
     global_poses = np.stack([global_x, global_y, global_heading], axis=1)
 
-    print(f"anchor: ({anchor_ego_state[0]:.2f}, {anchor_ego_state[1]:.2f}, h={np.rad2deg(anchor_ego_state[2]):.1f}°)")
-    print(f"global[0]: ({global_poses[0,0]:.2f}, {global_poses[0,1]:.2f})")
-    print(f"global[-1]: ({global_poses[-1,0]:.2f}, {global_poses[-1,1]:.2f})")
+    # print(f"anchor: ({anchor_ego_state[0]:.2f}, {anchor_ego_state[1]:.2f}, h={np.rad2deg(anchor_ego_state[2]):.1f}°)")
+    # print(f"global[0]: ({global_poses[0,0]:.2f}, {global_poses[0,1]:.2f})")
+    # print(f"global[-1]: ({global_poses[-1,0]:.2f}, {global_poses[-1,1]:.2f})")
 
     trajectory = []
     for i in range(T):
@@ -314,9 +400,9 @@ def _parse_model_output(outputs, anchor_ego_state, cur):
         tp = TrajectoryPoint(Direction.FORWARD, carla_x, carla_y, speed, carla_heading_rad)
         trajectory.append(tp)
 
-    print(f"First CARLA point: ({trajectory[0].x:.2f}, {trajectory[0].y:.2f})")
-    print(f"Last CARLA point: ({trajectory[-1].x:.2f}, {trajectory[-1].y:.2f})")
-    print(f"Cur: ({cur.x:.2f}, {cur.y:.2f})")
+    # print(f"First CARLA point: ({trajectory[0].x:.2f}, {trajectory[0].y:.2f})")
+    # print(f"Last CARLA point: ({trajectory[-1].x:.2f}, {trajectory[-1].y:.2f})")
+    # print(f"Cur: ({cur.x:.2f}, {cur.y:.2f})")
 
     return trajectory
     
@@ -382,18 +468,10 @@ def diffusion_plan( cur, destination, obs, world):
         ego_x, ego_y, ego_heading = carla_transform_to_standard(cur.x, cur.y, np.rad2deg(cur.angle))
         anchor_ego_state = np.array([ego_x, ego_y, ego_heading], dtype=np.float64)
 
-
-        print(f"destination CARLA x={destination.x:.2f} y={destination.y:.2f}")
-        print(f"AISLE_23_X={285.45}, ROW2_X=290.9, ROW3_X=280.0")
-        print(f"dest is {'ROW2 (east/right)' if destination.x > 285.45 else 'ROW3 (west/left)'}")
-        print(f"Car x={cur.x:.1f}, Row2 x=290.9, Row3 x=280.0")
-        print(f"Destination x={destination.x:.1f}")
-        print(f"Visual turn direction: LEFT")
-        print(f"Therefore: increasing x = {'west (LEFT)' if destination.x > cur.x else 'east (RIGHT)'}")
         dx_world = destination.x - cur.x  # positive = east
         dy_world = destination.y - cur.y  # positive = north
-        print(f"dest relative to car: dx={dx_world:.2f} (east+), dy={dy_world:.2f} (north+)")
-        print(f"car heading: {np.rad2deg(cur.angle):.1f} degrees")
+        # print(f"dest relative to car: dx={dx_world:.2f} (east+), dy={dy_world:.2f} (north+)")
+        # print(f"car heading: {np.rad2deg(cur.angle):.1f} degrees")
 
         dest_x, dest_y, _ = carla_transform_to_standard(destination.x, destination.y, 0.0)
         h = anchor_ego_state[2]
@@ -401,8 +479,6 @@ def diffusion_plan( cur, destination, obs, world):
 
         dest_ego_x, dest_ego_y = world_to_ego(dest_x, dest_y, x0, y0, h)
         _combined_guidance.set_goal(float(dest_ego_x), float(dest_ego_y))
-        print(f"dest local ego: ({dest_ego_x:.2f}, {dest_ego_y:.2f})")
-        print(f"expected: x>0 (ahead), y>0 (left, spot is to the left)")
 
         from utils.map_process import _map_processor
         path_ego = None
@@ -415,6 +491,11 @@ def diffusion_plan( cur, destination, obs, world):
             _combined_guidance.set_path(path_ego)
 
         inputs = _build_model_inputs(cur, obs)
+
+        neighbor_np = inputs['neighbor_agents_past'][0].cpu().numpy()  # (32, 21, 11)
+
+        debug_agents(world, neighbor_np, x0, y0, h)
+        
         route_lanes_np = inputs['route_lanes'][0].cpu().numpy()
         for lane_idx in range(route_lanes_np.shape[0]):
             lane = route_lanes_np[lane_idx]
@@ -451,9 +532,6 @@ def diffusion_plan( cur, destination, obs, world):
         test_pt = np.array([[[dest_x, dest_y]]], dtype=np.float64)
         test_avail = np.ones((1, 1), dtype=np.bool_)
         test_ego = vector_set_coordinates_to_local_frame(test_pt, test_avail, anchor_ego_state)[0][0]
-        print(f"vector_set transform: ({test_ego[0]:.2f}, {test_ego[1]:.2f})")
-        print(f"world_to_ego transform: ({dest_ego_x:.2f}, {dest_ego_y:.2f})")
-        print(f"match: {np.allclose(test_ego, [dest_ego_x, dest_ego_y], atol=0.01)}")
 
         return trajectory
 
@@ -571,7 +649,7 @@ def _draw_ego_frame_debug(world, anchor_ego_state, dest_local, path_ego):
         life_time=0.5
     )
     
-    print(f"GOAL drawn at CARLA: ({dx:.2f}, {dy:.2f}), ego frame: ({dest_local[0]:.2f}, {dest_local[1]:.2f})")
+    # print(f"GOAL drawn at CARLA: ({dx:.2f}, {dy:.2f}), ego frame: ({dest_local[0]:.2f}, {dest_local[1]:.2f})")
 
     # Draw path points (blue)
     for i in range(0, len(path_ego), 5):
@@ -582,3 +660,42 @@ def _draw_ego_frame_debug(world, anchor_ego_state, dest_local, path_ego):
             color=carla.Color(r=0, g=0, b=255),
             life_time=1.0
         )
+
+def debug_agents(world, neighbor_np, x0, y0, h):
+    ### DEBUG
+    for slot_idx in range(neighbor_np.shape[0]):
+        last_step = neighbor_np[slot_idx, -1]
+        if np.abs(last_step).sum() < 1e-6:
+            continue
+        ex, ey = float(last_step[0]), float(last_step[1])
+        cos_h, sin_h = float(last_step[2]), float(last_step[3])
+        local_heading = np.arctan2(sin_h, cos_h)
+        half_l = float(last_step[7]) / 2.0
+        half_w = float(last_step[6]) / 2.0
+
+        # Compute world heading directly
+        world_heading = local_heading + h
+
+        wx, wy = ego_to_world(ex, ey, x0, y0, h)
+        cx, cy, _ = standard_to_carla(wx, wy, 0.0)
+        dist = np.sqrt(ex**2 + ey**2)
+        color = carla.Color(r=140, g=30, b=140) if dist < 10.0 else carla.Color(r=30, g=120, b=120)
+
+        # Draw 4-corner bounding box rectangle in world frame
+        # fwd = along heading, left = 90° CCW from heading
+        cos_wh = np.cos(world_heading)
+        sin_wh = np.sin(world_heading)
+        # 4 corners: (±half_l along fwd) ± (half_w along left)
+        corners_std = []
+        for sl, sw in [(1, 1), (-1, 1), (-1, -1), (1, -1)]:
+            corner_wx = wx + sl * half_l * cos_wh - sw * half_w * sin_wh
+            corner_wy = wy + sl * half_l * sin_wh + sw * half_w * cos_wh
+            ccx, ccy, _ = standard_to_carla(corner_wx, corner_wy, 0.0)
+            corners_std.append(carla.Location(x=ccx, y=ccy, z=1.0))
+
+        # Draw 4 edges
+        for i in range(4):
+            world.debug.draw_line(
+                corners_std[i], corners_std[(i + 1) % 4],
+                thickness=0.1, color=color, life_time=1.0
+            )
