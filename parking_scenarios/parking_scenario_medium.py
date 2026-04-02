@@ -9,7 +9,7 @@ import py_trees
 
 from parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
 
-from v2_experiment_utils_static import (
+from v2_experiment_utils import (
     obstacle_map_from_bbs,
     town04_spawn_ego_vehicle,
     town04_spawn_parked_cars,
@@ -46,7 +46,7 @@ import random
 
 class ParkingScenarioMedium(BasicScenario):
     category = "ParkingScenario"
-    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, mode = CollisionMode.STOP_EARLY):
+    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, mode = CollisionMode.STOP_EARLY, car_class = None):
 
         self.config = config
         self.world = world
@@ -64,7 +64,7 @@ class ParkingScenarioMedium(BasicScenario):
         self.criteria_enable = criteria_enable
         
         # load car
-        self.car = town04_spawn_ego_vehicle(world, destination)
+        self.car = town04_spawn_ego_vehicle(world, destination, car_class=car_class)
         CarlaDataProvider.register_actor(self.car.actor)  
         world.tick()
         

@@ -78,7 +78,7 @@ class ParkingScenarioHard(BasicScenario):
 
         self.world.tick()
         
-        self.timeout = 70
+        self.timeout = 140
 
         # self.all_scenario_classes = None
         # self.ego_data = None

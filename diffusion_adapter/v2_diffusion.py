@@ -40,10 +40,10 @@ from utils.coord_utils import standard_to_carla
 # ---------------------------------------------------------------------------
 USE_DIFFUSION = True
 REPLAN_INTERVAL = 1  # replan every tick as the original paper does https://arxiv.org/pdf/2501.15564
-DIFFUSION_LOOKAHEAD = 10  # lookahead steps for pure-pursuit (overrides v2.LOOKAHEAD=3 for the 80-step diffusion trajectory)
+DIFFUSION_LOOKAHEAD = 5  # lookahead steps for pure-pursuit (overrides v2.LOOKAHEAD=3 for the 80-step diffusion trajectory)
 LOOKAHEAD_DIST_M = 3.0
 LOOKAHEAD = 3
-DESTINATION_THRESHOLD = 0.4
+DESTINATION_THRESHOLD = 0.5
 
 
 class CarlaCameraSensor():
@@ -102,8 +102,8 @@ class CarlaCar():
         self.car = Car((destination.x, destination.y), self.gnss_sensor, self.time_sensor, self.collision_sensor, self.world)
         # Override Car dims with actual actor bounding box.
         bb = self.actor.bounding_box
-        self.car.front_m      = bb.extent.x + bb.location.x + 1.6
-        self.car.rear_m       = max(0.1, bb.extent.x - bb.location.x - 1.6)
+        self.car.front_m      = bb.extent.x + bb.location.x
+        self.car.rear_m       = max(0.1, bb.extent.x - bb.location.x)
         self.car.half_width_m = bb.extent.y
         self.destination_bb = destination_bb
         self.recording_file = None
@@ -196,9 +196,9 @@ class CarlaCar():
             for px in self._world_to_pixels(image, diffusion_pts):
                 if px:
                     cv2.circle(data, px, 4, (0, 255, 0), -1)
-            for px in self._world_to_pixels(image, astar_pts):
-                if px:
-                    cv2.circle(data, px, 3, (0, 255, 255), -1)
+            # for px in self._world_to_pixels(image, astar_pts):
+            #     if px:
+            #         cv2.circle(data, px, 3, (0, 255, 255), -1)
 
             self.recording_writer.write(data)
             if self.car.mode == Mode.PARKED:
@@ -284,12 +284,9 @@ class Car():
         self.stagnation_history = []
         self.failure_history = []
         self.obs: ObstacleMap | None = None
-        self.destination = TrajectoryPoint(Direction.FORWARD, destination[0], destination[1], MIN_SPEED, 0).offset(-1)
+        angle = np.pi if destination[0] < 284 else 0.0
+        self.destination = TrajectoryPoint(Direction.FORWARD, destination[0], destination[1], MIN_SPEED, angle)
         self.controller = VehiclePIDController({'K_P': 2, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.05}, {'K_P': 0.5, 'K_I': 0.05, 'K_D': 0.0, 'dt': 0.05})
-
-        if destination[0] < 284:
-            self.destination.angle += np.pi
-            self.destination = self.destination.offset(-2)
 
         self.gnss_sensor = gnss_sensor
         self.time_sensor = time_sensor
@@ -347,7 +344,6 @@ class Car():
         self.cur.x, self.cur.y = self.gnss_sensor.get_location()
         self.cur.speed = self.gnss_sensor.get_speed()
         self.cur.angle = self.gnss_sensor.get_heading()
-        self.cur = self.cur.offset(-1)
 
     def perceive(self, parked_car_ids=set()):
         if self.collision_sensor.has_collided:
@@ -450,13 +446,13 @@ class Car():
         cur.direction = wp.direction
         ## slow down as we reach the parking spot
         ## TODO: Make this a little less hardcoded
-        dist = cur.distance(destination)
-        if dist < 3.0:
-            print(f"[speed] SLOWING DOWN")
+        # dist = cur.distance(destination)
+        # if dist < 3.0:
+        #     print(f"[speed] SLOWING DOWN")
             
-            target_speed = max(0.0, MIN_SPEED * 0.75)
-            print(f"[slow] dist={dist:.2f} target={target_speed:.2f} cur.speed={cur.speed:.2f}")
-            wp.speed = target_speed
+        #     target_speed = max(0.0, MIN_SPEED * 0.75)
+        #     print(f"[slow] dist={dist:.2f} target={target_speed:.2f} cur.speed={cur.speed:.2f}")
+        #     wp.speed = target_speed
         ##########
         ctrl = self.controller.run_step(
             mps_to_kmph(cur.speed),

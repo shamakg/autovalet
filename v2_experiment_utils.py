@@ -9,6 +9,7 @@ from parking_position import (
     player_location_Town04,
     town04_bound 
 )
+from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 from v2 import CarlaCar, Mode, ObstacleMap
 
 HOST = 'localhost'
@@ -29,6 +30,8 @@ PARKED_VEHICLES = [
     'vehicle.toyota.prius'
 ]
 DELTA_SECONDS = 0.1
+
+## double check simulate physics
 
 def load_client():
     print(f"starting simulation on {HOST}:{PORT}")
@@ -100,6 +103,7 @@ def town04_spawn_parked_cars(world, spawn_points, skip, num_random_cars):
         if npc is None:
             parked_cars_and_spots_bbs.append(approximate_bb_from_center(spawn_point))
             continue
+        CarlaDataProvider.register_actor(npc)
         npc.set_simulate_physics(True)
         physics_control = npc.get_physics_control()
         physics_control.mass = 100000
@@ -128,7 +132,7 @@ def town04_spawn_traffic_cones(world, spawn_points):
     for traffic_cone_location in traffic_cone_locations:
         traffic_cone_transform = carla.Transform(traffic_cone_location)
         traffic_cone = world.try_spawn_actor(traffic_cone_bp, traffic_cone_transform)
-        traffic_cone.set_simulate_physics(False)
+        traffic_cone.set_simulate_physics(True)
         traffic_cones.append(traffic_cone)
         traffic_cone_bbs.append([
             traffic_cone_location.x - traffic_cone.bounding_box.extent.x, traffic_cone_location.y - traffic_cone.bounding_box.extent.y,
@@ -291,7 +295,7 @@ def get_bounding_boxes(parking_scenario, debug = True, life_time = 1):
             continue
 
         bbox = oriented_bbox(walker, walker.bounding_box)
-        moving_cars_bbs.append(bbox)
+        walker_bbs.append((walker.id, bbox))
         _draw_bb(world, bbox, carla.Color(0, 0, 255), life_time)
 
     return moving_cars_bbs, traffic_cone_bbs, walker_bbs
@@ -477,7 +481,7 @@ def town04_spawn_parked_cars_with_doors(world, spawn_points, skip, num_random_ca
         if npc is None:
             parked_cars_and_spots_bbs.append(approximate_bb_from_center(spawn_point))
             continue
-        npc.set_simulate_physics(False)
+        npc.set_simulate_physics(True)
         parked_cars.append(npc)
         bb = [
             spawn_point.x - npc.bounding_box.extent.x, spawn_point.y - npc.bounding_box.extent.y,
