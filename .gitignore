@@ -5,4 +5,5 @@ test.mp4
 diffusion_adapter/Diffusion-Planner
 diffusion_adapter/nuplan-devkit
 diffusion_adapter/checkpoints
+diffusion_adapter/results
 
