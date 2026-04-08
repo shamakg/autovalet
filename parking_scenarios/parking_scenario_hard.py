@@ -11,7 +11,7 @@ from carla import Transform
 from parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
 from parking_scenarios.smart_pedestrian_crossing_parking import SmartPedestrianCrossingParking
 
-from v2_experiment_utils import (
+from testbed.v2_experiment_utils import (
     town04_spawn_ego_vehicle,
     town04_spawn_parked_cars,
     town04_spawn_parked_cars_with_doors,

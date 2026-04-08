@@ -9,7 +9,7 @@ import py_trees
 
 from parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
 
-from v2_experiment_utils_static import (
+from testbed.v2_experiment_utils_static import (
     obstacle_map_from_bbs,
     town04_spawn_ego_vehicle,
     town04_spawn_parked_cars,

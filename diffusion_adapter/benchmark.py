@@ -35,7 +35,7 @@ from srunner.scenariomanager.timer import GameTime
 from srunner.scenarioconfigs.scenario_configuration import ScenarioConfiguration
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 
-from v2_experiment_utils import (
+from testbed.v2_experiment_utils import (
     _draw_bb,
     clear_obstacle_map,
     get_bounding_boxes,

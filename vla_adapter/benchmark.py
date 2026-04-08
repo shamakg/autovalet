@@ -4,6 +4,8 @@ import json
 import os
 from datetime import datetime
 from enum import Enum
+import sys
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet') 
 # from parking_scenarios.parking_scenario import ParkingScenario
 from parking_scenarios.parking_scenario_easy import ParkingScenarioEasy
 
@@ -54,6 +56,7 @@ import matplotlib.pyplot as plt
 import sys
 import signal
 
+from agent_interface import SimLingoAdapter
 
 from v2_experiment import SCENARIOS
 NUM_RANDOM_CARS = 50
@@ -77,7 +80,7 @@ NETWORK_SEND_LATENCIES = [latency // IMAGE_DOWNSIZE for latency in NETWORK_SEND_
 
 import time
 
-
+checkpoint_path = '/tmp/simlingo_ckpt/checkpoints/epoch=013.ckpt/pytorch_model.pt'
 
 class Mode(Enum):
     NORMAL = 1
@@ -95,6 +98,7 @@ class Event:
 def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path=None, car_list = []):
     cam1 = None
     cam2 = None
+    adapter = None
     parking_scenario = None
     mode = CollisionMode.MISS ### TODO: make this an argument
     NEAR_MISS_THRESHOLD = 2.0
@@ -132,6 +136,14 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
 
         world.tick()
         world.tick()
+
+        adapter = SimLingoAdapter('localhost', 2000)
+        adapter.init_testbed(
+            checkpoint_path,
+            world,
+            parking_scenario.car.actor,
+            parking_scenario.car.car.destination
+        )
 
         
 
@@ -173,7 +185,7 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
 
         scenario_start_wall = time.time()
 
-        while not is_done(parking_scenario.car):
+        while not adapter.is_done(parking_scenario.car.car.destination):
 
             ### ----------- tick all the actors
 
@@ -182,7 +194,10 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             GameTime.on_carla_tick(timestamp)
             CarlaDataProvider.on_carla_tick() ### NEED THIS so that trigger distance will work
             parking_scenario.car.car.localize()
-            parking_scenario.car.run_step(parked_car_ids)
+
+            ## Benchmark logic
+            control = adapter.run_step_testbed(timestamp)
+            parking_scenario.car.actor.apply_control(control)
             # parking_scenario.car.process_recording_frames()
 
 
@@ -293,6 +308,7 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
         actual_collisions.append(analyze_scenario(parking_scenario)[1])
         if recording_path and parking_scenario:
             finalize_recording(parking_scenario.car)
+        if adapter: adapter.destroy_cam()
         if cam1: cam1.destroy()
         if cam2: cam2.destroy()
         if parking_scenario:

@@ -10,13 +10,13 @@ from parking_scenarios.parking_scenario_easy import ParkingScenarioEasy
 from parking_scenarios.parking_scenario_medium import ParkingScenarioMedium
 from parking_scenarios.parking_scenario_hard import HardMode, ParkingScenarioHard
 from parking_scenarios.opposite_vehicle_parking import CollisionMode
-from v2 import ObstacleMap
+from vla_adapter.v2 import ObstacleMap
 from srunner.scenariomanager.timer import GameTime
 from srunner.scenarioconfigs.scenario_configuration import ActorConfigurationData, ScenarioConfiguration
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 
 import py_trees
-from v2_experiment_utils import (
+from testbed.v2_experiment_utils import (
     _draw_bb,
     clear_obstacle_map,
     get_bounding_boxes,
@@ -32,6 +32,16 @@ from v2_experiment_utils import (
 
 )
 
+from testbed.recording_utils import (
+    init_recording,
+    process_recording_frames,
+    finalize_recording,
+    prompt_delete,
+    make_cleanup_handler,
+    open_recordings
+
+)
+
 # For lane waypoint hack
 from parking_position import (
     parking_lane_waypoints_Town04,
@@ -42,6 +52,8 @@ import carla
 
 import numpy as np
 import matplotlib.pyplot as plt
+import sys
+import signal
 
 
 from v2_experiment import SCENARIOS
@@ -63,6 +75,7 @@ RECORD = True
 
 NETWORK_SEND_LATENCIES = [latency // IMAGE_DOWNSIZE for latency in NETWORK_SEND_LATENCIES]
 
+
 import time
 
 
@@ -80,12 +93,19 @@ class Event:
         self.time = time
         self.data = data
 
-def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path=None):
-    recording_cam = None
+def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path=None, car_list = []):
+    cam1 = None
+    cam2 = None
     parking_scenario = None
     mode = CollisionMode.MISS ### TODO: make this an argument
     NEAR_MISS_THRESHOLD = 2.0
     PREDICTION_HORIZON = 0.5
+
+    path_chase   = recording_path.replace('.mp4', '_chase.mp4')   if recording_path else None
+    path_topdown = recording_path.replace('.mp4', '_topdown.mp4') if recording_path else None
+
+    
+    
 
     try:  
 
@@ -107,11 +127,14 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             mode = HardMode.PedMode
         )
 
+        if recording_path:
+            cam1 = init_recording(parking_scenario.car, path_chase, top_down=False)
+            cam2 = init_recording(parking_scenario.car, path_topdown, top_down=True)
+
         world.tick()
         world.tick()
 
-        if recording_path:
-            recording_cam = parking_scenario.car.init_recording(recording_path)
+        
 
         #### SUPER IMPORTANT: something with build scenarios breaks the car's motions
         ###### There are three possible fixes, 
@@ -129,6 +152,7 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
         ego_loc = parking_scenario.car.actor.get_location()
         parking_scenario.car.car.obs = obstacle_map_from_bbs(
             parking_scenario.parked_cars_bbs, min_y=ego_loc.y - 5)
+        car_list[0] = parking_scenario.car
         # Give the diffusion adapter access to parked car actors so it can pass
         # their real positions, yaws, and dimensions to the model as agent features.
         parking_scenario.car.car.obs.parked_cars = parking_scenario.parked_cars
@@ -160,6 +184,8 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             CarlaDataProvider.on_carla_tick() ### NEED THIS so that trigger distance will work
             parking_scenario.car.car.localize()
             parking_scenario.car.run_step(parked_car_ids)
+            # parking_scenario.car.process_recording_frames()
+
 
             if parking_scenario.scenario_tree:
                 parking_scenario.scenario_tree.tick_once()
@@ -246,7 +272,7 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             #--------
 
             if recording_path:
-                parking_scenario.car.process_recording_frames()
+                process_recording_frames(parking_scenario.car)
 
             if parking_scenario.scenario_tree.status != py_trees.common.Status.RUNNING:
                 print(f"Parking Timeout: Scenario Failure")
@@ -266,10 +292,10 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
         print(f'Walker/Cone Collisions (BB): {walker_collisions_ref[0]}')
     finally:
         actual_collisions.append(analyze_scenario(parking_scenario)[1])
-        if recording_cam:
-            recording_cam.destroy()
-        if recording_path:
-            parking_scenario.car.finalize_recording()
+        if recording_path and parking_scenario:
+            finalize_recording(parking_scenario.car)
+        if cam1: cam1.destroy()
+        if cam2: cam2.destroy()
         if parking_scenario:
             parking_scenario.cleanup()
 
@@ -310,6 +336,13 @@ def make_run_dir():
 
 def main():
     run_dir = make_run_dir()
+    all_recording_paths = []
+    car_list = [None]
+
+    handler = make_cleanup_handler(lambda: car_list[0], all_recording_paths)
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
+
     print(f'Saving results to: {run_dir}')
 
     try:
@@ -337,7 +370,9 @@ def main():
             recording_path = None
             if RECORD:
                 recording_path = os.path.join(run_dir, f'scenario_{i+1}.mp4')
-            run_scenario(world, destination_parking_spot, parked_spots, ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path)
+                all_recording_paths.append(recording_path.replace('.mp4', '_chase.mp4'))
+                all_recording_paths.append(recording_path.replace('.mp4', '_topdown.mp4'))
+            run_scenario(world, destination_parking_spot, parked_spots, ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path, car_list)
             collisions.append(collisions_ref[0])
             walker_collisions.append(walker_collisions_ref[0])
             near_misses.append(near_misses_ref[0])
@@ -346,6 +381,9 @@ def main():
         print('stopping simulation')
 
     finally:
+        open_recordings(all_recording_paths)
+        prompt_delete(all_recording_paths)
+        
         summary = {
             'vehicle_collisions': collisions,
             'total_vehicle_collisions': sum(collisions) if collisions else 0,

@@ -1,9 +1,11 @@
 __pycache__
 *.pyc
-/results
-test.mp4
-diffusion_adapter/Diffusion-Planner
-diffusion_adapter/nuplan-devkit
-diffusion_adapter/checkpoints
-diffusion_adapter/results
 
+test.mp4
+Diffusion-Planner/
+nuplan-devkit/
+checkpoints/
+results/
+
+simlingo/
+OpenDriveVLA-main/
