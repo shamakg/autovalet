@@ -211,12 +211,12 @@ class ParkingScenario(BasicScenario):
         self.list_scenarios.append(opposite_scenario)
         
         # Debug visualization
-        self.world.debug.draw_point(
-            spawn_location,
-            size=0.5,
-            color=carla.Color(0, 255, 255),
-            life_time=self.timeout
-        )
+        # self.world.debug.draw_point(
+        #     spawn_location,
+        #     size=0.5,
+        #     color=carla.Color(0, 255, 255),
+        #     life_time=self.timeout
+        # )
         
         return opposite_scenario
 
@@ -252,9 +252,9 @@ class ParkingScenario(BasicScenario):
         self.list_scenarios.append(door_scenario)
         
         # Debug: draw the door car location
-        self.world.debug.draw_point(
-            door_car.get_location(), size=0.5, color=carla.Color(255, 0, 0), life_time=10
-        )
+        # self.world.debug.draw_point(
+        #     door_car.get_location(), size=0.5, color=carla.Color(255, 0, 0), life_time=10
+        # )
     
         return door_scenario
     
@@ -282,9 +282,9 @@ class ParkingScenario(BasicScenario):
         self.list_scenarios.append(cut_in_scenario)
 
         # Debug: draw the cut in car location
-        self.world.debug.draw_point(
-            cut_in_car.get_location(), size=0.5, color=carla.Color(255, 0, 0), life_time=10
-        )
+        # self.world.debug.draw_point(
+        #     cut_in_car.get_location(), size=0.5, color=carla.Color(255, 0, 0), life_time=10
+        # )
     
         return cut_in_scenario
 

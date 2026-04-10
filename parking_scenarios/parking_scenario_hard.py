@@ -189,9 +189,9 @@ class ParkingScenarioHard(BasicScenario):
         self.list_scenarios.append(door_scenario)
         
         # Debug: draw the door car location
-        self.world.debug.draw_point(
-            door_car.get_location(), size=0.5, color=carla.Color(255, 0, 0), life_time=10
-        )
+        # self.world.debug.draw_point(
+        #     door_car.get_location(), size=0.5, color=carla.Color(255, 0, 0), life_time=10
+        # )
     
         return door_scenario
     

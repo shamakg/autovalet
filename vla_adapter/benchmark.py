@@ -5,6 +5,7 @@ import os
 from datetime import datetime
 from enum import Enum
 import sys
+import cv2
 sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet') 
 # from parking_scenarios.parking_scenario import ParkingScenario
 from parking_scenarios.parking_scenario_easy import ParkingScenarioEasy
@@ -40,6 +41,9 @@ from testbed.recording_utils import (
     finalize_recording,
     prompt_delete,
     make_cleanup_handler,
+    project_world_to_topdown,
+    save_trajectory_plot,
+    ego_to_world,
 
 )
 
@@ -80,8 +84,10 @@ NETWORK_SEND_LATENCIES = [latency // IMAGE_DOWNSIZE for latency in NETWORK_SEND_
 
 import time
 
-checkpoint_path = '/tmp/simlingo_ckpt/checkpoints/epoch=013.ckpt/pytorch_model.pt'
+run_dir = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/results/3zvision"
 
+
+checkpoint_path = '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt'
 class Mode(Enum):
     NORMAL = 1
     ALTERNATE = 2 # latency compensation
@@ -100,6 +106,7 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
     cam2 = None
     adapter = None
     parking_scenario = None
+    trajectory_log = []
     mode = CollisionMode.MISS ### TODO: make this an argument
     NEAR_MISS_THRESHOLD = 2.0
     PREDICTION_HORIZON = 0.5
@@ -130,9 +137,11 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             mode = HardMode.PedMode
         )
 
+        latest_topdown_frame = [None]
         if recording_path:
             cam1 = init_recording(parking_scenario.car, path_chase, top_down=False)
             cam2 = init_recording(parking_scenario.car, path_topdown, top_down=True)
+
 
         world.tick()
         world.tick()
@@ -142,8 +151,13 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             checkpoint_path,
             world,
             parking_scenario.car.actor,
-            parking_scenario.car.car.destination
+            parking_vehicle_locations_Town04[destination_parking_spot],
+            parking_scenario.car.car.destination.angle
         )
+
+        print(f"parking spot raw: {parking_vehicle_locations_Town04[destination_parking_spot]}")
+        print(f"car.car.destination: {parking_scenario.car.car.destination.x:.2f}, {parking_scenario.car.car.destination.y:.2f}")
+        print(f"passed to adapter: {adapter._destination.x:.2f}, {adapter._destination.y:.2f}")
 
         
 
@@ -197,6 +211,19 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
 
             ## Benchmark logic
             control = adapter.run_step_testbed(timestamp)
+
+            # Capture model's predicted trajectory in world coords
+            if adapter.latest_pred_route is not None:
+                loc = parking_scenario.car.actor.get_location()
+                yaw = np.deg2rad(parking_scenario.car.actor.get_transform().rotation.yaw)
+                world_traj = ego_to_world(adapter.latest_pred_route, loc.x, loc.y, yaw)
+                trajectory_log.append(world_traj)
+                parking_scenario.car.latest_trajectory = world_traj
+
+            frame = getattr(parking_scenario.car, 'latest_topdown_frame', None)
+
+
+            print(f"applying: t={control.throttle:.3f} s={control.steer:.3f} b={control.brake:.3f}")
             parking_scenario.car.actor.apply_control(control)
             # parking_scenario.car.process_recording_frames()
 
@@ -207,11 +234,11 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
 
             #--------- Collision Logic
 
-            draw_car(parking_scenario, world)
+            # draw_car(parking_scenario, world)
             moving_cars_bbs, traffic_cone_bbs, walker_bbs = get_bounding_boxes(parking_scenario)
 
-            for bb in parking_scenario.parked_cars_bbs:
-                _draw_bb(world, bb, carla.Color(0, 0, 255), 1)
+            # for bb in parking_scenario.parked_cars_bbs:
+            #     _draw_bb(world, bb, carla.Color(0, 0, 255), 1)
 
             # --- Vehicle collision: read CollisionTest criterion (same source as actual_collisions) ---
             if vehicle_criterion is not None:
@@ -305,6 +332,8 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
         print(f'Vehicle Collisions (CARLA sensor): {collisions_ref[0]}')
         print(f'Walker/Cone Collisions (BB): {walker_collisions_ref[0]}')
     finally:
+        if recording_path and trajectory_log:
+            save_trajectory_plot(trajectory_log, recording_path.replace('.mp4', '_trajectories.png'))
         actual_collisions.append(analyze_scenario(parking_scenario)[1])
         if recording_path and parking_scenario:
             finalize_recording(parking_scenario.car)

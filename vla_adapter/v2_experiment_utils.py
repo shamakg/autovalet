@@ -14,9 +14,8 @@ from v2 import CarlaCar, Mode, ObstacleMap
 HOST = 'localhost'
 PORT = 2000
 DEBUG = True
-EGO_VEHICLE = 'vehicle.lincoln.mkz_2020'
-# EGO_VEHICLE = 'vehicle.audi.etron'
-# EGO_VEHICLE = 'vehicle.tesla.model3'
+EGO_VEHICLE = 'vehicle.audi.etron'
+# EGO_VEHICLE = 'vehicle.lincoln.mkz_2020'
 PARKED_VEHICLES = [
     'vehicle.mercedes.coupe_2020',
     'vehicle.dodge.charger_2020',
