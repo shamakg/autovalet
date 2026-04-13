@@ -13,7 +13,7 @@ from parking_scenarios.parking_scenario_easy import ParkingScenarioEasy
 from parking_scenarios.parking_scenario_medium import ParkingScenarioMedium
 from parking_scenarios.parking_scenario_hard import HardMode, ParkingScenarioHard
 from parking_scenarios.opposite_vehicle_parking import CollisionMode
-from v2 import ObstacleMap
+from v2 import ObstacleMap, plan_hybrid_a_star, TrajectoryPoint, Direction
 from srunner.scenariomanager.timer import GameTime
 from srunner.scenarioconfigs.scenario_configuration import ActorConfigurationData, ScenarioConfiguration
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
@@ -61,6 +61,8 @@ import sys
 import signal
 
 from agent_interface import SimLingoAdapter
+# from agent_interface_pid import PIDAdapter as SimLingoAdapter  
+
 
 from v2_experiment import SCENARIOS
 NUM_RANDOM_CARS = 50
@@ -75,7 +77,7 @@ SHOULD_PIPELINE = True
 SHOULD_ADJUST_MODEL = False
 TIMEOUT = 120 * 1000 # ms
 IMAGE_DOWNSIZE = 1
-WALL_TIMEOUT = 120 # s
+WALL_TIMEOUT = 290 # s
 RECORD = True
 
 
@@ -84,7 +86,7 @@ NETWORK_SEND_LATENCIES = [latency // IMAGE_DOWNSIZE for latency in NETWORK_SEND_
 
 import time
 
-run_dir = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/results/3zvision"
+# run_dir = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/results/3zvision"
 
 
 checkpoint_path = '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt'
@@ -155,6 +157,17 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             parking_scenario.car.car.destination.angle
         )
 
+        # Sync adapter destination with Car's actual (offset-adjusted) destination
+        actual_dest = parking_scenario.car.car.destination
+        adapter._destination = carla.Location(x=actual_dest.x, y=actual_dest.y, z=0.3)
+        adapter._destination_bb = [
+            actual_dest.x - 2.4, actual_dest.y - 0.96,
+            actual_dest.x + 2.4, actual_dest.y + 0.96
+        ]
+        adapter._dest_angle = actual_dest.angle
+
+        # adapter.init_debug_trajectory('arc')
+
         print(f"parking spot raw: {parking_vehicle_locations_Town04[destination_parking_spot]}")
         print(f"car.car.destination: {parking_scenario.car.car.destination.x:.2f}, {parking_scenario.car.car.destination.y:.2f}")
         print(f"passed to adapter: {adapter._destination.x:.2f}, {adapter._destination.y:.2f}")
@@ -199,7 +212,28 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
 
         scenario_start_wall = time.time()
 
-        while not adapter.is_done(parking_scenario.car.car.destination):
+        # Initialize A* trajectory once
+        cur_loc = parking_scenario.car.actor.get_location()
+        cur_yaw = np.deg2rad(parking_scenario.car.actor.get_transform().rotation.yaw)
+        cur_tp = TrajectoryPoint(Direction.FORWARD, cur_loc.x, cur_loc.y, 1.0, cur_yaw)
+        print(f"[DEBUG] Planning A* from ({cur_loc.x:.2f}, {cur_loc.y:.2f}) yaw={np.rad2deg(cur_yaw):.1f}")
+        print(f"[DEBUG] To destination ({parking_scenario.car.car.destination.x:.2f}, {parking_scenario.car.car.destination.y:.2f})")
+        print(f"[DEBUG] Obstacle map shape: {parking_scenario.car.car.obs.obs.shape if parking_scenario.car.car.obs else 'None'}")
+        astar_traj = plan_hybrid_a_star(cur_tp, parking_scenario.car.car.destination, parking_scenario.car.car.obs)
+        adapter.init_astar_trajectory(astar_traj)
+        print(f"[DEBUG] Initialized A* trajectory with {len(astar_traj) if astar_traj else 0} points")
+        if astar_traj:
+            print(f"[DEBUG] First 3 waypoints: {[(p.x, p.y) for p in astar_traj[:3]]}")
+
+        skip_requested = False
+        original_sigint = signal.getsignal(signal.SIGINT)
+        def _skip_handler(signum, frame):
+            nonlocal skip_requested
+            skip_requested = True
+            print("\n[SKIP] Ctrl+C pressed — finishing current scenario and moving to next...")
+        signal.signal(signal.SIGINT, _skip_handler)
+
+        while not skip_requested and not adapter.is_done(parking_scenario.car.car.destination):
 
             ### ----------- tick all the actors
 
@@ -209,10 +243,10 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             CarlaDataProvider.on_carla_tick() ### NEED THIS so that trigger distance will work
             parking_scenario.car.car.localize()
 
-            ## Benchmark logic
-            control = adapter.run_step_testbed(timestamp)
+            ## Benchmark logic - use A* trajectory
+            control = adapter.run_step_testbed_astar(timestamp)
 
-            # Capture model's predicted trajectory in world coords
+            # Capture A* trajectory in world coords
             if adapter.latest_pred_route is not None:
                 loc = parking_scenario.car.actor.get_location()
                 yaw = np.deg2rad(parking_scenario.car.actor.get_transform().rotation.yaw)
@@ -326,12 +360,14 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             
             
         
+        
+    finally:
+        signal.signal(signal.SIGINT, original_sigint)
         iou = parking_scenario.car.iou()
         ious.append(iou)
         print(f'IOU: {iou}')
         print(f'Vehicle Collisions (CARLA sensor): {collisions_ref[0]}')
         print(f'Walker/Cone Collisions (BB): {walker_collisions_ref[0]}')
-    finally:
         if recording_path and trajectory_log:
             save_trajectory_plot(trajectory_log, recording_path.replace('.mp4', '_trajectories.png'))
         actual_collisions.append(analyze_scenario(parking_scenario)[1])
@@ -425,7 +461,7 @@ def main():
         print('stopping simulation')
 
     finally:
-        prompt_delete(all_recording_paths)
+        # prompt_delete(all_recording_paths)
         summary = {
             'vehicle_collisions': collisions,
             'total_vehicle_collisions': sum(collisions) if collisions else 0,

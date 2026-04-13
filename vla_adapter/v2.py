@@ -23,10 +23,10 @@ def mps_to_kmph(speed): return speed*3.6
 DESTINATION_THRESHOLD = 0.2
 REPLAN_THRESHOLD = 2
 PERCEPTION_LATENCY = 0.5 # seconds
-LOOKAHEAD = 3
+LOOKAHEAD = 5
 TRAJECTORY_EXTENSION = 5
-MAX_ACCELERATION = 1
-MAX_SPEED = kmph_to_mps(10)
+MAX_ACCELERATION = 4
+MAX_SPEED = kmph_to_mps(7)
 MIN_SPEED = kmph_to_mps(2)
 STAGNATION_HISTORY_LENGTH = 100
 STAGNATION_THRESHOLD = 0.1
@@ -367,7 +367,10 @@ class CarlaCar():
         self.car.front_m      = bb.extent.x + bb.location.x + 1.6
         self.car.rear_m       = max(0.1, bb.extent.x - bb.location.x - 1.6)
         self.car.half_width_m = bb.extent.y
-        self.destination_bb = destination_bb
+        self.destination_bb = [
+            destination.x - bb.extent.x, destination.y - bb.extent.y,
+            destination.x + bb.extent.x, destination.y + bb.extent.y,
+        ]
         self.recording_file = None
         self.has_recorded_segment = False
         self.frames = Queue()
@@ -455,8 +458,10 @@ class Car():
         self.stagnation_history = []
         self.failure_history = []
         self.obs: ObstacleMap | None = None
-        self.destination = TrajectoryPoint(Direction.FORWARD, destination[0], destination[1], MIN_SPEED, 0).offset(-1)
-        self.controller = VehiclePIDController({'K_P': 2, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.05}, {'K_P': 0.5, 'K_I': 0.05, 'K_D': 0.0, 'dt': 0.05})
+        self.destination = TrajectoryPoint(Direction.FORWARD, destination[0], destination[1], MIN_SPEED, 0)
+        self.controller = VehiclePIDController({'K_P': 8, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.05}, {'K_P': 3, 'K_I': 0.05, 'K_D': 0.0, 'dt': 0.05})
+
+        print("HIIIIII")
         
         if destination[0] < 284:
             self.destination.angle += np.pi
