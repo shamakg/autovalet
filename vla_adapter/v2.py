@@ -462,10 +462,9 @@ class Car():
         self.controller = VehiclePIDController({'K_P': 8, 'K_I': 0.05, 'K_D': 0.2, 'dt': 0.05}, {'K_P': 3, 'K_I': 0.05, 'K_D': 0.0, 'dt': 0.05})
 
         print("HIIIIII")
-        
+
         if destination[0] < 284:
             self.destination.angle += np.pi
-            self.destination = self.destination.offset(-2)
 
         self.gnss_sensor = gnss_sensor
         self.time_sensor = time_sensor

@@ -12,7 +12,6 @@ import cv2
 import torch
 from v2 import CarlaGnssSensor, CarlaTimeSensor, CarlaCollisionSensor, TrajectoryPoint, Direction, refine_trajectory
 from team_code.transfuser_utils import inverse_conversion_2d, preprocess_compass
-from nav_planner import LateralPIDController
 save_dir = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/results/save_trajectory"
 
 class SimLingoAdapter(LingoAgent):
@@ -43,16 +42,13 @@ class SimLingoAdapter(LingoAgent):
         self.control = carla.VehicleControl(0.0, 0.0, 1.0)
         self.latest_pred_route = None
 
-        ### HACK: bugfix of scenario override
-        self.config.clip_throttle = 0.4
+        ### TUNING CONFIG CONSTANTS for parking compatibility
+        self.config.clip_throttle = 0.4 ## Must go at lower speeds to be viable for parking
         # self.config.clip_delta = 0.1
-        self.config.brake_ratio = 1.001
+        # self.config.brake_ratio = 1.001
         self.config.brake_speed = 0
-        self._done_counter = 0
-        self._done_threshold = 60
         # self.config.creep_throttle = 0.05
         
-        # self.turn_controller = LateralPIDController(inference_mode=False) 
         # self.turn_controller.k_i = 0.1
         self.save_path_metric = None
         # self.turn_controller.default_lookahead = 75
@@ -66,7 +62,7 @@ class SimLingoAdapter(LingoAgent):
         self.metric_info = {}
         self.hero_actor = actor
 
-        self._astar_ti = 0
+        # self._astar_ti = 0
 
         # ---------------------------------------------------------------   
         
@@ -96,23 +92,20 @@ class SimLingoAdapter(LingoAgent):
 
         loc = actor.get_location()
         
-        dx = np.cos(dest_angle) * 3.0
-        dy = np.sin(dest_angle) * 3.0
-        dest = carla.Location(x=destination.x, y=destination.y, z=loc.z)
-        past_dest = carla.Location(x=destination.x + dx, y=destination.y + dy, z=loc.z)
+        # Single source of truth for destination — raw spot centre + angle.
+        # _destination_bb is the spot footprint; is_done fires when actor is inside it.
         self._destination = destination
-
-        ### offset to get the INSIDE of the parking spot
-        self._destination_bb = [                                                                                                     
-            destination.x - 2.4, destination.y - 0.96,                                                                               
-            destination.x + 2.4, destination.y + 0.96                                                                                
+        self._destination_bb = [
+            destination.x - 2.4, destination.y - 0.96,
+            destination.x + 2.4, destination.y + 0.96,
         ]
         self._dest_angle = dest_angle
 
         # ---------------------------------------------------------------
 
-        NUM_APPROACH_POINTS = 1
+        ### Building Route for our car
         SPACING = 0.5  # meters between points
+        dest = carla.Location(x=destination.x, y=destination.y, z=loc.z)
 
         route = [(carla.Transform(loc), RoadOption.LANEFOLLOW)]  # start
         
@@ -143,7 +136,8 @@ class SimLingoAdapter(LingoAgent):
         cam_bp.set_attribute('image_size_x', str(cfg.camera_width_0))
         cam_bp.set_attribute('image_size_y', str(cfg.camera_height_0))
         cam_bp.set_attribute('fov', str(cfg.camera_fov_0))
-        
+
+
         # ---------------------------------------------------------------
     
         self._cam = world.spawn_actor(
@@ -163,10 +157,6 @@ class SimLingoAdapter(LingoAgent):
 
         # ---------------------------------------------------------------
 
-        # DRAW DEBUG
-        print(f"spawn: {loc.x:.2f}, {loc.y:.2f}")
-        print(f"destination: {destination.x:.2f}, {destination.y:.2f}")
-        print(f"distance: {np.sqrt((loc.x-destination.x)**2 + (loc.y-destination.y)**2):.2f}m")
         self._cam.listen(lambda img: setattr(self, 'latest_frame', img))
         print(f"camera_pos_0: {cfg.camera_pos_0}")
         print(f"camera_rot_0: {cfg.camera_rot_0}")
@@ -183,7 +173,7 @@ class SimLingoAdapter(LingoAgent):
             return carla.VehicleControl(brake=1.0)
 
         print("STEP:", self.step)
-        # print(f"step={self.step}, control={self.control}")
+
         if self.latest_frame is None:
             return carla.VehicleControl(brake=1.0)
 
@@ -225,19 +215,19 @@ class SimLingoAdapter(LingoAgent):
     # ---------------------------------------------------------------   
 
         ## debug print
-        print(f"dest_angle: {np.rad2deg(self._dest_angle):.1f} deg")
-        print(f"car yaw: {np.rad2deg(yaw):.1f} deg")
-        print(f"direct vec to dest: dx={self._destination.x - loc.x:.2f}, dy={self._destination.y - loc.y:.2f}")
+        # print(f"dest_angle: {np.rad2deg(self._dest_angle):.1f} deg")
+        # print(f"car yaw: {np.rad2deg(yaw):.1f} deg")
+        # print(f"direct vec to dest: dx={self._destination.x - loc.x:.2f}, dy={self._destination.y - loc.y:.2f}")
         forward = actor.get_transform().get_forward_vector()
-        print(f"forward vector: x={forward.x:.2f}, y={forward.y:.2f}")
-        print(f"yaw: {transform.rotation.yaw:.1f}")
-        print(f"gps: {gps}")
-        print(f"loc: {loc.x}, {loc.y}")
+        # print(f"forward vector: x={forward.x:.2f}, y={forward.y:.2f}")
+        # print(f"yaw: {transform.rotation.yaw:.1f}")
+        # print(f"gps: {gps}")
+        # print(f"loc: {loc.x}, {loc.y}")
         gps_pos = self._route_planner.convert_gps_to_carla(gps)
-        print(f"gps_pos (route planner coords): {gps_pos[:2]}")
-        print(f"actual loc (world coords): {loc.x:.2f}, {loc.y:.2f}")
-        print(f"route waypoint 0: {self._route_planner.route[0][0][:2]}")
-        print(f"route waypoint 1: {self._route_planner.route[1][0][:2]}")
+        # print(f"gps_pos (route planner coords): {gps_pos[:2]}")
+        # print(f"actual loc (world coords): {loc.x:.2f}, {loc.y:.2f}")
+        # print(f"route waypoint 0: {self._route_planner.route[0][0][:2]}")
+        # print(f"route waypoint 1: {self._route_planner.route[1][0][:2]}")
         waypoint_route = self._route_planner.run_step(np.append(gps_pos[:2], gps[2]))
         if len(waypoint_route) > 1:
             target_point = waypoint_route[1][0]
@@ -255,115 +245,7 @@ class SimLingoAdapter(LingoAgent):
 
 
         result = self.run_step(input_data, timestamp)
-        # if self.latest_pred_route is not None:
-        #     np.save(f'{save_dir}/pred_route_{self.step:04d}.npy', self.latest_pred_route)
-
         return result
-
-    def run_step_testbed_astar(self, timestamp):
-        """Use hardcoded A* trajectory instead of model."""
-        if self.latest_frame is None:
-            print("No frame yet")
-            return carla.VehicleControl(brake=1.0)
-
-        if not hasattr(self, '_astar_trajectory'):
-            print("ERROR: _astar_trajectory not initialized. Call init_astar_trajectory() first.")
-            return carla.VehicleControl(brake=1.0)
-
-        self.step += 1
-        actor = self.hero_actor
-        loc = actor.get_location()
-
-        transform = actor.get_transform()
-        yaw = np.deg2rad(transform.rotation.yaw)
-        pitch = np.deg2rad(transform.rotation.pitch)
-        orientation = np.array([np.cos(pitch) * np.cos(yaw), np.cos(pitch) * np.sin(yaw), np.sin(pitch)])
-
-        vel = actor.get_velocity()
-        vel_np = np.array([vel.x, vel.y, vel.z])
-        speed = np.dot(vel_np, orientation)
-
-        # Advance ti while the next waypoint is closer than the current one
-        traj = self._astar_trajectory
-        ti = self._astar_ti
-        while ti + 1 < len(traj):
-            dc = (traj[ti].x - loc.x) ** 2 + (traj[ti].y - loc.y) ** 2
-            dn = (traj[ti + 1].x - loc.x) ** 2 + (traj[ti + 1].y - loc.y) ** 2
-            if dn < dc:
-                ti += 1
-            else:
-                break
-        self._astar_ti = ti
-
-        # Draw trajectory
-        world = self.hero_actor.get_world()
-        for i in range(len(traj) - 1):
-            p1 = traj[i]
-            p2 = traj[i + 1]
-            world.debug.draw_line(
-                carla.Location(x=p1.x, y=p1.y, z=0.5),
-                carla.Location(x=p2.x, y=p2.y, z=0.5),
-                thickness=0.1,
-                color=carla.Color(0, 255, 255),  # cyan
-                life_time=5
-            )
-        # Highlight current waypoint in green
-        if ti < len(traj):
-            p = traj[ti]
-            world.debug.draw_point(
-                carla.Location(x=p.x, y=p.y, z=0.8),
-                size=0.2,
-                color=carla.Color(0, 255, 0),  # green
-                life_time=5
-            )
-
-        # Slice next N points ahead, pad with last if near the end
-        N = 30
-        chunk = traj[ti:ti + N]
-        if len(chunk) < N:
-            chunk = list(chunk) + [traj[-1]] * (N - len(chunk))
-
-        # World -> ego (same transform used in the real pipeline)
-        compass = preprocess_compass(yaw + np.deg2rad(90.0))
-        cur_xy = np.array([loc.x, loc.y], dtype=np.float32)
-        ego_pts = np.stack([
-            inverse_conversion_2d(np.array([p.x, p.y], dtype=np.float32), cur_xy, compass)
-            for p in chunk
-        ]).astype(np.float32)
-        pred_route = torch.from_numpy(ego_pts[np.newaxis])
-
-        # Fake speed waypoints: straight forward, 0.25 s spacing
-        DESIRED = 0.75
-        dt = 0.25
-        speed_wps = np.array(
-            [[DESIRED * dt * (i + 1), 0.0] for i in range(N)], dtype=np.float32
-        )
-        pred_speed_wps = torch.from_numpy(speed_wps[np.newaxis])
-
-        gt_velocity = torch.FloatTensor([[float(speed)]])
-
-        steer, throttle, brake = self.control_pid(pred_route, gt_velocity, pred_speed_wps)
-
-        if self.step < self.config.inital_frames_delay:
-            control = carla.VehicleControl(0.0, 0.0, 1.0)
-        else:
-            control = carla.VehicleControl(
-                steer=float(steer), throttle=float(throttle), brake=float(brake)
-            )
-        self.control = control
-
-        print(
-            f"[astar] step={self.step} ti={ti}/{len(traj)} v={float(speed):.2f} "
-            f"steer={float(steer):.3f} thr={float(throttle):.3f} brk={int(bool(brake))} "
-            f"ego0=({float(ego_pts[0,0]):.2f},{float(ego_pts[0,1]):.2f})"
-        )
-        return control
-
-    def init_astar_trajectory(self, trajectory_points):
-        """Initialize the A* trajectory. trajectory_points should be a list of TrajectoryPoint objects."""
-        self._astar_trajectory = trajectory_points
-        self._astar_ti = 0
-        print(f"Initialized A* trajectory with {len(trajectory_points)} points")
 
 
 
@@ -381,61 +263,7 @@ class SimLingoAdapter(LingoAgent):
             'rotation': v2l(actor.get_transform().rotation, rot=True),
         }
 
-    def control_pid_base(self, route_waypoints, velocity, speed_waypoints):
-        # temporarily print desired_speed
-        route_wps = route_waypoints[0].data.cpu().numpy()
-        speed_wps = speed_waypoints[0].data.cpu().numpy()
-        one_second = int(self.config.carla_fps // (self.config.wp_dilation * self.config.data_save_freq))
-        half_second = one_second // 2
-        desired_speed = np.linalg.norm(speed_wps[half_second - 2] - speed_wps[one_second - 2]) * 2.0
-        print(f"desired_speed: {desired_speed:.3f} m/s")
-        
-        
-        steer, throttle, brake = super().control_pid(route_waypoints, velocity, speed_waypoints)
-        print("Route", route_wps.shape, route_wps[:3])
-        
-        return steer, throttle, brake
-
-    def control_pid(self, route_waypoints, velocity, speed_waypoints):
-        if hasattr(self, '_astar_trajectory') and self._astar_trajectory:
-            loc = self.hero_actor.get_location()
-            yaw = np.deg2rad(self.hero_actor.get_transform().rotation.yaw)
-            traj = self._astar_trajectory
-
-            # advance ti
-            ti = getattr(self, '_astar_ti', 0)
-            while ti + 1 < len(traj):
-                dc = (traj[ti].x - loc.x)**2 + (traj[ti].y - loc.y)**2
-                dn = (traj[ti+1].x - loc.x)**2 + (traj[ti+1].y - loc.y)**2
-                if dn < dc:
-                    ti += 1
-                else:
-                    break
-            self._astar_ti = ti
-
-            chunk = traj[ti:ti+20]
-            while len(chunk) < 20:
-                chunk = list(chunk) + [traj[-1]]
-
-            ego_pts = []
-            for wp in chunk:
-                dx = wp.x - loc.x
-                dy = wp.y - loc.y
-                ex = dx * np.cos(-yaw) - dy * np.sin(-yaw)
-                ey = dx * np.sin(-yaw) + dy * np.cos(-yaw)
-                ego_pts.append([ex, ey])
-
-            route_waypoints = torch.tensor(np.array(ego_pts), dtype=torch.float32).unsqueeze(0)
-
-            TARGET_SPEED = 1.5
-            dt = 0.25
-            speed_wps = np.array([[TARGET_SPEED * dt * (i+1), 0.0] for i in range(20)], dtype=np.float32)
-            speed_waypoints = torch.tensor(speed_wps, dtype=torch.float32).unsqueeze(0)
-
-            print(f"[astar] ti={ti}/{len(traj)} ego0=({ego_pts[0][0]:.2f},{ego_pts[0][1]:.2f})")
-
-        return super().control_pid(route_waypoints, velocity, speed_waypoints)
-
+    
         
 
     # def is_done(self, destination, threshold = 0.25, angle_threshold_deg = 15):
@@ -446,32 +274,38 @@ class SimLingoAdapter(LingoAgent):
     #     print(f"DIST {dist:.2f}  ANGLE_DIFF {angle_diff:.1f}")
     #     return dist < threshold  # and angle_diff < angle_threshold_deg
 
-    def is_done(self, destination=None, threshold=0.25, angle_threshold_deg=15):
+    def is_done(self, destination):
         loc = self.hero_actor.get_location()
-        bb = self._destination_bb
-        inside = (bb[0] <= loc.x <= bb[2]) and (bb[1] <= loc.y <= bb[3])
-        # Always use self._destination (raw parking location) so the distance
-        # check is consistent with the bounding box, which is also built from it.
-        dest = self._destination
-        dist = np.sqrt((loc.x - dest.x)**2 + (loc.y - dest.y)**2)
         yaw = np.deg2rad(self.hero_actor.get_transform().rotation.yaw)
-        angle_diff = abs(np.degrees(np.arctan2(np.sin(yaw - self._dest_angle), np.cos(yaw - self._dest_angle))))
-        print(f"DIST {dist:.2f}  ANGLE_DIFF {angle_diff:.1f}  INSIDE {inside}")
-        
-        currently_done = inside and dist < threshold
-        
-        if currently_done:
-            self._done_counter += 1
-        else:
-            self._done_counter = 0
-        
-        return self._done_counter >= self._done_threshold 
+
+        # Front bumper position in world frame
+        half_len = self.hero_actor.bounding_box.extent.x  # ~2.46m for Lincoln MKZ
+        front_x = loc.x + half_len * np.cos(yaw)
+        front_y = loc.y + half_len * np.sin(yaw)
+
+        dist = np.sqrt((front_x - self._destination.x)**2 + (front_y - self._destination.y)**2)
+        done = dist < 0.7
+        print(f"DIST FROM DEST {dist}")
+        return done
 
         
     def destroy_cam(self):
         if hasattr(self, '_cam') and self._cam.is_alive:
             self._cam.destroy()
 
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
 # ---------------------------------------------------------------------------------------------------------
 # ---------------------------------------------------------------------------------------------------------
 # ---------------------------------------------------------------------------------------------------------
@@ -741,3 +575,173 @@ class SimLingoAdapter(LingoAgent):
 
             print(f"steer: {steer:.3f}, speed: {speed_ms:.2f}, max_lat: {max_lateral:.2f}")
             return steer, throttle, brake
+        
+    def control_pid_astar(self, route_waypoints, velocity, speed_waypoints):
+        if hasattr(self, '_astar_trajectory') and self._astar_trajectory:
+            loc = self.hero_actor.get_location()
+            yaw = np.deg2rad(self.hero_actor.get_transform().rotation.yaw)
+            traj = self._astar_trajectory
+
+            # advance ti
+            ti = getattr(self, '_astar_ti', 0)
+            min_dist = float('inf')
+            for i in range(ti, min(ti + 10, len(traj))):
+                d = (traj[i].x - loc.x)**2 + (traj[i].y - loc.y)**2
+                if d < min_dist:
+                    min_dist = d
+                    ti = i
+            self._astar_ti = ti
+
+            # take a chunk ahead and resample to 0.1m spacing
+            chunk = traj[ti:ti + 20]
+            while len(chunk) < 2:
+                chunk = list(chunk) + [traj[-1]]
+
+            pts = np.array([[wp.x, wp.y] for wp in chunk])
+            dists = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
+            total = dists[-1]
+            new_dists = np.arange(0, total, 0.1)
+            ego_pts_world = np.stack([
+                np.interp(new_dists, dists, pts[:, 0]),
+                np.interp(new_dists, dists, pts[:, 1])
+            ], axis=1)
+
+            # convert to ego frame
+            if total < 0.01 or len(new_dists) == 0:
+                ego_pts = [[0.1 * (i+1), 0.0] for i in range(20)]
+            else:
+                ego_pts = []
+                for wx, wy in ego_pts_world[:20]:
+                    dx, dy = wx - loc.x, wy - loc.y
+                    ex = dx * np.cos(-yaw) - dy * np.sin(-yaw)
+                    ey = dx * np.sin(-yaw) + dy * np.cos(-yaw)
+                    ego_pts.append([ex, ey])
+                while len(ego_pts) < 20:
+                    ego_pts.append(ego_pts[-1])
+
+            route_waypoints = torch.tensor(np.array(ego_pts), dtype=torch.float32).unsqueeze(0)
+
+            TARGET_SPEED = 1.5
+            dt = 0.25
+            speed_wps = np.array([[TARGET_SPEED * dt * (i+1), 0.0] for i in range(20)], dtype=np.float32)
+            speed_waypoints = torch.tensor(speed_wps, dtype=torch.float32).unsqueeze(0)
+
+            print(f"[astar] ti={ti}/{len(traj)} ego0=({ego_pts[0][0]:.2f},{ego_pts[0][1]:.2f})")
+
+        return super().control_pid(route_waypoints, velocity, speed_waypoints)
+    
+    def run_step_testbed_astar(self, timestamp):
+        """Use hardcoded A* trajectory instead of model."""
+        if self.latest_frame is None:
+            print("No frame yet")
+            return carla.VehicleControl(brake=1.0)
+
+        if not hasattr(self, '_astar_trajectory') or not self._astar_trajectory:
+            print("ERROR: _astar_trajectory not initialized or empty (A* may have failed).")
+            return carla.VehicleControl(brake=1.0)
+
+        self.step += 1
+        actor = self.hero_actor
+        loc = actor.get_location()
+
+        transform = actor.get_transform()
+        yaw = np.deg2rad(transform.rotation.yaw)
+        pitch = np.deg2rad(transform.rotation.pitch)
+        orientation = np.array([np.cos(pitch) * np.cos(yaw), np.cos(pitch) * np.sin(yaw), np.sin(pitch)])
+
+        vel = actor.get_velocity()
+        vel_np = np.array([vel.x, vel.y, vel.z])
+        speed = np.dot(vel_np, orientation)
+
+        # Advance ti only when close to current waypoint and next is closer
+        traj = self._astar_trajectory
+        ti = self._astar_ti
+        WAYPOINT_THRESHOLD = 1.0  # Only advance if within 1m of current waypoint
+        while ti + 1 < len(traj):
+            dc = np.sqrt((traj[ti].x - loc.x) ** 2 + (traj[ti].y - loc.y) ** 2)
+            dn = np.sqrt((traj[ti + 1].x - loc.x) ** 2 + (traj[ti + 1].y - loc.y) ** 2)
+            # Only advance if close enough to current waypoint AND next is closer
+            if dc < WAYPOINT_THRESHOLD and dn < dc:
+                ti += 1
+            else:
+                break
+        self._astar_ti = ti
+
+         # ---------------------------------------------------------------   
+
+        # Draw trajectory
+        world = self.hero_actor.get_world()
+        for i in range(len(traj) - 1):
+            p1 = traj[i]
+            p2 = traj[i + 1]
+            world.debug.draw_line(
+                carla.Location(x=p1.x, y=p1.y, z=0.5),
+                carla.Location(x=p2.x, y=p2.y, z=0.5),
+                thickness=0.1,
+                color=carla.Color(0, 255, 255),  # cyan
+                life_time=5
+            )
+        # Highlight current waypoint in green
+        if ti < len(traj):
+            p = traj[ti]
+            world.debug.draw_point(
+                carla.Location(x=p.x, y=p.y, z=0.8),
+                size=0.2,
+                color=carla.Color(0, 255, 0),  # green
+                life_time=5
+            )
+
+        # Slice next N points ahead, pad with last if near the end
+        N = 30
+        chunk = traj[ti:ti + N]
+        if len(chunk) < N:
+            chunk = list(chunk) + [traj[-1]] * (N - len(chunk))
+
+        # World -> ego (same transform used in the real pipeline)
+        compass = preprocess_compass(yaw + np.deg2rad(90.0))
+        cur_xy = np.array([loc.x, loc.y], dtype=np.float32)
+        ego_pts = np.stack([
+            inverse_conversion_2d(np.array([p.x, p.y], dtype=np.float32), cur_xy, compass)
+            for p in chunk
+        ]).astype(np.float32)
+        pred_route = torch.from_numpy(ego_pts[np.newaxis])
+
+         # ---------------------------------------------------------------   
+
+        # Fake speed waypoints: straight forward, 0.25 s spacing
+        DESIRED = 0.75
+        dt = 0.25
+        speed_wps = np.array(
+            [[DESIRED * dt * (i + 1), 0.0] for i in range(N)], dtype=np.float32
+        )
+        pred_speed_wps = torch.from_numpy(speed_wps[np.newaxis])
+
+        gt_velocity = torch.FloatTensor([[float(speed)]])
+
+        steer, throttle, brake = self.control_pid(pred_route, gt_velocity, pred_speed_wps)
+
+        if self.step < self.config.inital_frames_delay:
+            control = carla.VehicleControl(0.0, 0.0, 1.0)
+        else:
+            control = carla.VehicleControl(
+                steer=float(steer), throttle=float(throttle), brake=float(brake)
+            )
+        self.control = control
+
+        print(
+            f"[astar] step={self.step} ti={ti}/{len(traj)} v={float(speed):.2f} "
+            f"steer={float(steer):.3f} thr={float(throttle):.3f} brk={int(bool(brake))} "
+            f"ego0=({float(ego_pts[0,0]):.2f},{float(ego_pts[0,1]):.2f})"
+        )
+        return control
+
+    def init_astar_trajectory(self, trajectory_points):
+        """Initialize the A* trajectory. trajectory_points should be a list of TrajectoryPoint objects."""
+        self._astar_trajectory = trajectory_points
+        self._astar_ti = 0
+        
+        print(f"Initialized A* trajectory with {len(trajectory_points)} points")
+        print(f"Last 5 waypoints:")
+        for wp in trajectory_points[-5:]:
+            print(f"  x={wp.x:.2f} y={wp.y:.2f} angle={np.rad2deg(wp.angle):.1f} dir={wp.direction}")
+        print(f"dest_angle={np.rad2deg(self._dest_angle):.1f}")

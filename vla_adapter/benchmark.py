@@ -2,133 +2,130 @@
 
 import json
 import os
+import signal
+import sys
+import time
 from datetime import datetime
 from enum import Enum
-import sys
-import cv2
-sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet') 
-# from parking_scenarios.parking_scenario import ParkingScenario
-from parking_scenarios.parking_scenario_easy import ParkingScenarioEasy
 
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet')
+
+import carla
+import matplotlib.pyplot as plt
+import numpy as np
+import py_trees
+
+from srunner.scenariomanager.timer import GameTime
+from srunner.scenarioconfigs.scenario_configuration import ScenarioConfiguration
+from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
+
+from parking_scenarios.parking_scenario_easy import ParkingScenarioEasy
 from parking_scenarios.parking_scenario_medium import ParkingScenarioMedium
 from parking_scenarios.parking_scenario_hard import HardMode, ParkingScenarioHard
 from parking_scenarios.opposite_vehicle_parking import CollisionMode
-from v2 import ObstacleMap, plan_hybrid_a_star, TrajectoryPoint, Direction
-from srunner.scenariomanager.timer import GameTime
-from srunner.scenarioconfigs.scenario_configuration import ActorConfigurationData, ScenarioConfiguration
-from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
-
-import py_trees
+from v2 import TrajectoryPoint
+from v2_experiment import SCENARIOS
 from testbed.v2_experiment_utils import (
-    _draw_bb,
-    clear_obstacle_map,
     get_bounding_boxes,
-
     load_client,
-    is_done,
     near_miss,
     obstacle_map_from_bbs,
     town04_load,
-    town04_spawn_parked_cars,
-    town04_spawn_parked_cars_with_doors,
     town04_spectator_bev,
-
 )
-
 from testbed.recording_utils import (
-    init_recording,
-    process_recording_frames,
     finalize_recording,
-    prompt_delete,
+    init_recording,
     make_cleanup_handler,
-    project_world_to_topdown,
+    process_recording_frames,
     save_trajectory_plot,
-    ego_to_world,
-
 )
-
-# For lane waypoint hack
-from parking_position import (
-    parking_lane_waypoints_Town04,
-    parking_vehicle_locations_Town04,
-)
-
-import carla
-
-import numpy as np
-import matplotlib.pyplot as plt
-import sys
-import signal
-
+from parking_position import parking_vehicle_locations_Town04
 from agent_interface import SimLingoAdapter
-# from agent_interface_pid import PIDAdapter as SimLingoAdapter  
 
-
-from v2_experiment import SCENARIOS
+# ---------------------------------------------------------------
+# ---------------------------------------------------------------
+### Many of these are legacy
 NUM_RANDOM_CARS = 50
-NETWORK_SEND_LATENCIES = [0] # ms
-PERCEPTION_LATENCY = 200 # ms
-SMALL_PERCEPTION_LATENCY = 100 # ms
-RECV_LATENCY = 100 # ms
-MODE_PERIOD = 500 # ms
-PLANNING_PERIOD = 500 # ms
-DATA_COLLECTION_PERIOD = 200 # ms
+NETWORK_SEND_LATENCIES = [0]        # ms
+PERCEPTION_LATENCY = 200            # ms
+SMALL_PERCEPTION_LATENCY = 100      # ms
+RECV_LATENCY = 100                  # ms
+MODE_PERIOD = 500                   # ms
+PLANNING_PERIOD = 500               # ms
+DATA_COLLECTION_PERIOD = 200        # ms
 SHOULD_PIPELINE = True
 SHOULD_ADJUST_MODEL = False
-TIMEOUT = 120 * 1000 # ms
+TIMEOUT = 120 * 1000                # ms
 IMAGE_DOWNSIZE = 1
-WALL_TIMEOUT = 290 # s
+WALL_TIMEOUT = 290                  # s
 RECORD = True
 
-
 NETWORK_SEND_LATENCIES = [latency // IMAGE_DOWNSIZE for latency in NETWORK_SEND_LATENCIES]
+# ---------------------------------------------------------------
+# ---------------------------------------------------------------
+
+checkpoint_path = (
+    '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/'
+    'vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt'
+)
+# ---------------------------------------------------------------
+# ---------------------------------------------------------------
 
 
-import time
-
-# run_dir = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/results/3zvision"
-
-
-checkpoint_path = '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt'
 class Mode(Enum):
     NORMAL = 1
-    ALTERNATE = 2 # latency compensation
+    ALTERNATE = 2  # latency compensation
+
 
 class EventType(Enum):
     PERCEPTION = 1
+
 
 class Event:
     def __init__(self, type: EventType, time: int, data):
         self.type = type
         self.time = time
         self.data = data
+# ---------------------------------------------------------------
+# ---------------------------------------------------------------
 
-def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path=None, car_list = []):
+def run_scenario(
+    world,
+    destination_parking_spot,
+    parked_spots,
+    ious,
+    collisions_ref,
+    near_misses_ref,
+    actual_collisions,
+    walker_collisions_ref,
+    recording_path=None,
+    car_list=[],
+):
     cam1 = None
     cam2 = None
     adapter = None
     parking_scenario = None
     trajectory_log = []
-    mode = CollisionMode.MISS ### TODO: make this an argument
+    mode = CollisionMode.MISS  ### TODO: make this an argument
     NEAR_MISS_THRESHOLD = 2.0
-    PREDICTION_HORIZON = 0.5
+
+    # ---------------------------------------------------------------
+    # Recording bookkeeping
 
     path_chase   = recording_path.replace('.mp4', '_chase.mp4')   if recording_path else None
     path_topdown = recording_path.replace('.mp4', '_topdown.mp4') if recording_path else None
+    # ---------------------------------------------------------------
 
-    
-    
-
-    try:  
-
+    try:
+        # ---------------------------------------------------------------
+        ## Set up Carla Scenario 
         config = ScenarioConfiguration()
         config.name = "Parking"
         config.type = "Parking"
         config.town = "Town04_Opt"
         config.other_actors = None
         config.route = False
-
-        ### Load the scenario
         parking_scenario = ParkingScenarioHard(
             world=world,
             config=config,
@@ -136,68 +133,75 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             parked=parked_spots,
             debug_mode=0,
             criteria_enable=True,
-            mode = HardMode.PedMode
+            mode=HardMode.PedMode,
         )
-
-        latest_topdown_frame = [None]
+        # ---------------------------------------------------------------
+        # More recording bookkeeping
         if recording_path:
             cam1 = init_recording(parking_scenario.car, path_chase, top_down=False)
             cam2 = init_recording(parking_scenario.car, path_topdown, top_down=True)
-
+        # ---------------------------------------------------------------
 
         world.tick()
         world.tick()
-
         adapter = SimLingoAdapter('localhost', 2000)
+
+    
+        # ---------------------------------------------------------------
+        ## Make destination more extreme to guide the model
+        # Compute far-wall destination: where the front bumper should end up.
+        # is_done uses the same far-wall point, so the check fires exactly when the car arrives.
+        dest_raw = parking_scenario.car.car.destination
+        half_len = parking_scenario.car.actor.bounding_box.extent.x
+        front_len = half_len + 1.6
+        far_dest = TrajectoryPoint(
+            dest_raw.direction,
+            dest_raw.x + front_len * np.cos(dest_raw.angle),
+            dest_raw.y + front_len * np.sin(dest_raw.angle),
+            dest_raw.speed,
+            dest_raw.angle,
+        )
+        # world.debug.draw_point(
+        #     carla.Location(x=far_dest.x, y=far_dest.y, z=0.5),
+        #     size=0.1,
+        #     color=carla.Color(r=0, g=200, b=255),
+        #     life_time=30,
+        # )
+
+        # ---------------------------------------------------------------
+        # Initialize model adapter
         adapter.init_testbed(
             checkpoint_path,
             world,
             parking_scenario.car.actor,
-            parking_vehicle_locations_Town04[destination_parking_spot],
-            parking_scenario.car.car.destination.angle
+            far_dest,
+            parking_scenario.car.car.destination.angle,
         )
 
-        # Sync adapter destination with Car's actual (offset-adjusted) destination
-        actual_dest = parking_scenario.car.car.destination
-        adapter._destination = carla.Location(x=actual_dest.x, y=actual_dest.y, z=0.3)
-        adapter._destination_bb = [
-            actual_dest.x - 2.4, actual_dest.y - 0.96,
-            actual_dest.x + 2.4, actual_dest.y + 0.96
-        ]
-        adapter._dest_angle = actual_dest.angle
-
-        # adapter.init_debug_trajectory('arc')
-
-        print(f"parking spot raw: {parking_vehicle_locations_Town04[destination_parking_spot]}")
-        print(f"car.car.destination: {parking_scenario.car.car.destination.x:.2f}, {parking_scenario.car.car.destination.y:.2f}")
-        print(f"passed to adapter: {adapter._destination.x:.2f}, {adapter._destination.y:.2f}")
-
-        
-
-        #### SUPER IMPORTANT: something with build scenarios breaks the car's motions
-        ###### There are three possible fixes, 
-        # to call small run_step here (bad because we would have to set obstacles BEFORE scenario)
-        # to set a min_speed
-        
+        # ---------------------------------------------------------------
+        # ---------------------------------------------------------------
+        ### Give the car access to obstacle bounding boxes (not needed for the model)
 
         moving_cars_bbs, traffic_cone_bbs, walker_bbs = get_bounding_boxes(parking_scenario)
-        all_bbs_list = parking_scenario.parked_cars_bbs + traffic_cone_bbs + moving_cars_bbs + [bb for _, bb in walker_bbs]
-
-        # Use only parked car bbs for the car's static obs. Walkers/moving obstacles
-        # are dynamic and tracked by ground_truth_kalman_filter; baking them into
-        # static_obs at their initial positions creates ghost obstacles and corrupts
-        # the map when they move (static_obs cells never restored after KF zeroes them).
+        all_bbs_list = (
+            parking_scenario.parked_cars_bbs
+            + traffic_cone_bbs
+            + moving_cars_bbs
+            + [bb for _, bb in walker_bbs]
+        )
+        # Use only parked car bbs for the car's static obs. 
         ego_loc = parking_scenario.car.actor.get_location()
         parking_scenario.car.car.obs = obstacle_map_from_bbs(
-            parking_scenario.parked_cars_bbs, min_y=ego_loc.y - 5)
+            parking_scenario.parked_cars_bbs, min_y=ego_loc.y - 5,
+        )
         car_list[0] = parking_scenario.car
-        # Give the diffusion adapter access to parked car actors so it can pass
-        # their real positions, yaws, and dimensions to the model as agent features.
         parking_scenario.car.car.obs.parked_cars = parking_scenario.parked_cars
-        parked_car_ids = {car.id for car in parking_scenario.parked_cars}
         collision_tracker = obstacle_map_from_bbs(all_bbs_list)
 
+        # ---------------------------------------------------------------
+        # ---------------------------------------------------------------
 
+        ### Initialize Collision Tracking Logic
         vehicle_criterion = next(
             (c for c in parking_scenario.get_criteria() if c.name == "VehicleCollisionTest"), None
         )
@@ -206,25 +210,12 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
         walker_last_seen = {}          # {id: ticks_since_last_overlap} for hysteresis
         near_miss_active = False
         near_miss_min_distance = float('inf')
-        kalman_filters = {}
+        # ---------------------------------------------------------------
 
         world.tick()
 
+        # ---------------------------------------------------------------
         scenario_start_wall = time.time()
-
-        # Initialize A* trajectory once
-        cur_loc = parking_scenario.car.actor.get_location()
-        cur_yaw = np.deg2rad(parking_scenario.car.actor.get_transform().rotation.yaw)
-        cur_tp = TrajectoryPoint(Direction.FORWARD, cur_loc.x, cur_loc.y, 1.0, cur_yaw)
-        print(f"[DEBUG] Planning A* from ({cur_loc.x:.2f}, {cur_loc.y:.2f}) yaw={np.rad2deg(cur_yaw):.1f}")
-        print(f"[DEBUG] To destination ({parking_scenario.car.car.destination.x:.2f}, {parking_scenario.car.car.destination.y:.2f})")
-        print(f"[DEBUG] Obstacle map shape: {parking_scenario.car.car.obs.obs.shape if parking_scenario.car.car.obs else 'None'}")
-        astar_traj = plan_hybrid_a_star(cur_tp, parking_scenario.car.car.destination, parking_scenario.car.car.obs)
-        adapter.init_astar_trajectory(astar_traj)
-        print(f"[DEBUG] Initialized A* trajectory with {len(astar_traj) if astar_traj else 0} points")
-        if astar_traj:
-            print(f"[DEBUG] First 3 waypoints: {[(p.x, p.y) for p in astar_traj[:3]]}")
-
         skip_requested = False
         original_sigint = signal.getsignal(signal.SIGINT)
         def _skip_handler(signum, frame):
@@ -232,119 +223,44 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
             skip_requested = True
             print("\n[SKIP] Ctrl+C pressed — finishing current scenario and moving to next...")
         signal.signal(signal.SIGINT, _skip_handler)
+        # ---------------------------------------------------------------
+        # ---------------------------------------------------------------
 
         while not skip_requested and not adapter.is_done(parking_scenario.car.car.destination):
-
-            ### ----------- tick all the actors
-
             world.tick()
             timestamp = world.get_snapshot().timestamp
             GameTime.on_carla_tick(timestamp)
-            CarlaDataProvider.on_carla_tick() ### NEED THIS so that trigger distance will work
+            CarlaDataProvider.on_carla_tick()  # needed so that trigger distance will work
             parking_scenario.car.car.localize()
 
-            ## Benchmark logic - use A* trajectory
-            control = adapter.run_step_testbed_astar(timestamp)
-
-            # Capture A* trajectory in world coords
-            if adapter.latest_pred_route is not None:
-                loc = parking_scenario.car.actor.get_location()
-                yaw = np.deg2rad(parking_scenario.car.actor.get_transform().rotation.yaw)
-                world_traj = ego_to_world(adapter.latest_pred_route, loc.x, loc.y, yaw)
-                trajectory_log.append(world_traj)
-                parking_scenario.car.latest_trajectory = world_traj
-
-            frame = getattr(parking_scenario.car, 'latest_topdown_frame', None)
-
-
+            control = adapter.run_step_testbed(timestamp)
             print(f"applying: t={control.throttle:.3f} s={control.steer:.3f} b={control.brake:.3f}")
             parking_scenario.car.actor.apply_control(control)
-            # parking_scenario.car.process_recording_frames()
-
 
             if parking_scenario.scenario_tree:
                 parking_scenario.scenario_tree.tick_once()
 
-
-            #--------- Collision Logic
-
-            # draw_car(parking_scenario, world)
+            # ---------------------------------------------------------------
+            # --- Collision logic ---
             moving_cars_bbs, traffic_cone_bbs, walker_bbs = get_bounding_boxes(parking_scenario)
 
-            # for bb in parking_scenario.parked_cars_bbs:
-            #     _draw_bb(world, bb, carla.Color(0, 0, 255), 1)
-
-            # --- Vehicle collision: read CollisionTest criterion (same source as actual_collisions) ---
-            if vehicle_criterion is not None:
-                new_count = vehicle_criterion.actual_value
-                if new_count > prev_vehicle_count:
-                    collisions_ref[0] += new_count - prev_vehicle_count
-                    print(f"Vehicle Collision Detected! (total so far: {new_count})")
-                    print("Current car location", parking_scenario.car.actor.get_location())
-                prev_vehicle_count = new_count
-
-            # --- Walker / cone collision + near-miss: grid-based, per-actor debounce ---
-            car = parking_scenario.car.car
-            collision_mask = collision_tracker.generate_collision_mask(
-                car.cur, front_m=car.front_m, rear_m=car.rear_m, half_width_m=car.half_width_m,
+            prev_vehicle_count, near_miss_active, near_miss_min_distance = track_collisions(
+                parking_scenario,
+                collision_tracker,
+                traffic_cone_bbs,
+                walker_bbs,
+                vehicle_criterion,
+                prev_vehicle_count,
+                colliding_walker_ids,
+                walker_last_seen,
+                near_miss_active,
+                near_miss_min_distance,
+                collisions_ref,
+                walker_collisions_ref,
+                near_misses_ref,
+                NEAR_MISS_THRESHOLD,
             )
-
-            # Per-walker check: exact OBB-AABB SAT — no grid quantization or dilation errors.
-            walker_ids_this_tick = set()
-            for w_id, w_bb in walker_bbs:
-                if obb_aabb_overlap(car.cur, car.front_m, car.rear_m, car.half_width_m, w_bb):
-                    walker_ids_this_tick.add(w_id)
-
-            # Cones: no per-actor IDs, use sentinel key 'cone'
-            if traffic_cone_bbs:
-                cone_obs = obstacle_map_from_bbs(traffic_cone_bbs, collision_tracker).obs
-                cone_obs[0, :] = 0; cone_obs[-1, :] = 0
-                cone_obs[:, 0] = 0; cone_obs[:, -1] = 0
-                _c = cone_obs
-                cone_obs = _c | np.roll(_c, 1, 0) | np.roll(_c, -1, 0) | np.roll(_c, 1, 1) | np.roll(_c, -1, 1)
-                if np.any(collision_mask & (cone_obs == 1)):
-                    walker_ids_this_tick.add('cone')
-
-            # Hysteresis: keep an ID in the active set for up to GRACE_TICKS after
-            # the last detected overlap, so grid-quantization flicker doesn't re-count
-            # the same walker crossing event.
-            GRACE_TICKS = 20  # ~1 s at 20 Hz; a walker can't re-enter that fast
-            for wid in walker_ids_this_tick:
-                walker_last_seen[wid] = 0  # reset / start grace counter
-            for wid in list(walker_last_seen.keys()):
-                if wid not in walker_ids_this_tick:
-                    walker_last_seen[wid] += 1
-                    if walker_last_seen[wid] > GRACE_TICKS:
-                        colliding_walker_ids.discard(wid)
-                        del walker_last_seen[wid]
-
-            new_collisions = walker_ids_this_tick - colliding_walker_ids
-            if new_collisions:
-                walker_collisions_ref[0] += len(new_collisions)
-                print(f"Walker/Cone Collision(s) Detected: {new_collisions}")
-            colliding_walker_ids |= walker_ids_this_tick
-
-            # Near-miss (only when no active collision)
-            all_walker_bbs = [bb for _, bb in walker_bbs] + traffic_cone_bbs
-            if not walker_ids_this_tick and all_walker_bbs:
-                combined_obs = obstacle_map_from_bbs(all_walker_bbs, collision_tracker).obs
-                combined_obs[0, :] = 0; combined_obs[-1, :] = 0
-                combined_obs[:, 0] = 0; combined_obs[:, -1] = 0
-                _w2 = combined_obs
-                combined_obs = _w2 | np.roll(_w2, 1, 0) | np.roll(_w2, -1, 0) | np.roll(_w2, 1, 1) | np.roll(_w2, -1, 1)
-                distance = near_miss(collision_mask, combined_obs)
-                if 0 < distance < NEAR_MISS_THRESHOLD:
-                    near_miss_min_distance = min(near_miss_min_distance, distance) if near_miss_active else distance
-                    near_miss_active = True
-                else:
-                    if near_miss_active:
-                        near_misses_ref[0] += 1
-                        print(f"Near-miss! Closest distance: {near_miss_min_distance:.2f}m")
-                    near_miss_active = False
-            elif not walker_ids_this_tick:
-                near_miss_active = False
-
-            #--------
+            # ---------------------------------------------------------------
 
             if recording_path:
                 process_recording_frames(parking_scenario.car)
@@ -357,10 +273,6 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
                 print(f"Parking Timeout: 60s elapsed")
                 break
 
-            
-            
-        
-        
     finally:
         signal.signal(signal.SIGINT, original_sigint)
         iou = parking_scenario.car.iou()
@@ -368,44 +280,44 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, collisions
         print(f'IOU: {iou}')
         print(f'Vehicle Collisions (CARLA sensor): {collisions_ref[0]}')
         print(f'Walker/Cone Collisions (BB): {walker_collisions_ref[0]}')
-        if recording_path and trajectory_log:
-            save_trajectory_plot(trajectory_log, recording_path.replace('.mp4', '_trajectories.png'))
         actual_collisions.append(analyze_scenario(parking_scenario)[1])
         if recording_path and parking_scenario:
             finalize_recording(parking_scenario.car)
-        if adapter: adapter.destroy_cam()
-        if cam1: cam1.destroy()
-        if cam2: cam2.destroy()
+        if adapter:
+            adapter.destroy_cam()
+        if cam1:
+            cam1.destroy()
+        if cam2:
+            cam2.destroy()
         if parking_scenario:
             parking_scenario.cleanup()
 
         world.tick()
         world.tick()
 
+
 ## Inspired by ScenarioManager
 def analyze_scenario(parking_scenario):
-        """
-        This function is intended to be called from outside and provide
-        the final statistics about the scenario (human-readable, in form of a junit
-        report, etc.)
-        """
+    """
+    This function is intended to be called from outside and provide
+    the final statistics about the scenario (human-readable, in form of a junit
+    report, etc.)
+    """
+    result = "SUCCESS"
+    print("EVENTS:")
+    num_collisions = 0
+    for criterion in parking_scenario.get_criteria():
+        criterion.terminate(None)
+        if hasattr(criterion, 'actual_value'):
+            num_collisions += criterion.actual_value
+        print(criterion.name, criterion.test_status)
+        if criterion.test_status != "SUCCESS":
+            result = "SCENARIO FAILURE"
 
-        result = "SUCCESS"
-        print("EVENTS:")
-        num_collisions = 0
-        for criterion in parking_scenario.get_criteria():
-            criterion.terminate(None)
-            if hasattr(criterion, 'actual_value'):
-                    num_collisions += criterion.actual_value
-            print(criterion.name, criterion.test_status)
-            if criterion.test_status != "SUCCESS":
-                result = "SCENARIO FAILURE"
+    print("FINAL SCENARIO RESULT:", result)
+    print("ACTUAL NUMBER OF COLLISIONS:", num_collisions)
+    return result, num_collisions
 
-        print("FINAL SCENARIO RESULT:", result)
-        print("ACTUAL NUMBER OF COLLISIONS:", num_collisions)
-        return result, num_collisions
-        
-        # parking_scenario.scenario_tree.terminate(py_trees.common.Status.SUCCESS)
 
 def make_run_dir():
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -413,6 +325,7 @@ def make_run_dir():
     run_dir = os.path.join(script_dir, 'results', timestamp)
     os.makedirs(run_dir, exist_ok=True)
     return run_dir
+
 
 def main():
     run_dir = make_run_dir()
@@ -428,16 +341,13 @@ def main():
     try:
         client = load_client()
 
-        # load map
         world = town04_load(client)
 
         CarlaDataProvider.set_client(client)
         CarlaDataProvider.set_world(world)
 
-        # load spectator
         town04_spectator_bev(world)
 
-        # run scenarios
         ious = []
         collisions = []
         walker_collisions = []
@@ -452,7 +362,18 @@ def main():
                 recording_path = os.path.join(run_dir, f'scenario_{i+1}.mp4')
                 all_recording_paths.append(recording_path.replace('.mp4', '_chase.mp4'))
                 all_recording_paths.append(recording_path.replace('.mp4', '_topdown.mp4'))
-            run_scenario(world, destination_parking_spot, parked_spots, ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path, car_list)
+            run_scenario(
+                world,
+                destination_parking_spot,
+                parked_spots,
+                ious,
+                collisions_ref,
+                near_misses_ref,
+                actual_collisions,
+                walker_collisions_ref,
+                recording_path,
+                car_list,
+            )
             collisions.append(collisions_ref[0])
             walker_collisions.append(walker_collisions_ref[0])
             near_misses.append(near_misses_ref[0])
@@ -460,8 +381,9 @@ def main():
     except KeyboardInterrupt:
         print('stopping simulation')
 
+    # ---------------------------------------------------------------
+    # ---------------------------------------------------------------
     finally:
-        # prompt_delete(all_recording_paths)
         summary = {
             'vehicle_collisions': collisions,
             'total_vehicle_collisions': sum(collisions) if collisions else 0,
@@ -516,6 +438,101 @@ def main():
 
         world.tick()
         print(f'\nAll results saved to: {run_dir}')
+    # ---------------------------------------------------------------
+    # ---------------------------------------------------------------
+
+def track_collisions(
+    parking_scenario,
+    collision_tracker,
+    traffic_cone_bbs,
+    walker_bbs,
+    vehicle_criterion,
+    prev_vehicle_count,
+    colliding_walker_ids,
+    walker_last_seen,
+    near_miss_active,
+    near_miss_min_distance,
+    collisions_ref,
+    walker_collisions_ref,
+    near_misses_ref,
+    near_miss_threshold,
+):
+    """
+    Run one tick of collision and near-miss tracking. Mutates colliding_walker_ids and
+    walker_last_seen in-place; returns updated scalar state as a tuple.
+    """
+    # Vehicle collision: read CollisionTest criterion (same source as actual_collisions)
+    if vehicle_criterion is not None:
+        new_count = vehicle_criterion.actual_value
+        if new_count > prev_vehicle_count:
+            collisions_ref[0] += new_count - prev_vehicle_count
+            print(f"Vehicle Collision Detected! (total so far: {new_count})")
+            print("Current car location", parking_scenario.car.actor.get_location())
+        prev_vehicle_count = new_count
+
+    # Walker / cone collision + near-miss: grid-based, per-actor debounce
+    car = parking_scenario.car.car
+    collision_mask = collision_tracker.generate_collision_mask(
+        car.cur, front_m=car.front_m, rear_m=car.rear_m, half_width_m=car.half_width_m,
+    )
+
+    # Per-walker check: exact OBB-AABB SAT — no grid quantization or dilation errors.
+    walker_ids_this_tick = set()
+    for w_id, w_bb in walker_bbs:
+        if obb_aabb_overlap(car.cur, car.front_m, car.rear_m, car.half_width_m, w_bb):
+            walker_ids_this_tick.add(w_id)
+
+    # Cones: no per-actor IDs, use sentinel key 'cone'
+    if traffic_cone_bbs:
+        cone_obs = obstacle_map_from_bbs(traffic_cone_bbs, collision_tracker).obs
+        cone_obs[0, :] = 0; cone_obs[-1, :] = 0
+        cone_obs[:, 0] = 0; cone_obs[:, -1] = 0
+        _c = cone_obs
+        cone_obs = _c | np.roll(_c, 1, 0) | np.roll(_c, -1, 0) | np.roll(_c, 1, 1) | np.roll(_c, -1, 1)
+        if np.any(collision_mask & (cone_obs == 1)):
+            walker_ids_this_tick.add('cone')
+
+    # Hysteresis: keep an ID in the active set for up to GRACE_TICKS after
+    # the last detected overlap, so grid-quantization flicker doesn't re-count
+    # the same walker crossing event.
+    GRACE_TICKS = 20  # ~1 s at 20 Hz; a walker can't re-enter that fast
+    for wid in walker_ids_this_tick:
+        walker_last_seen[wid] = 0  # reset / start grace counter
+    for wid in list(walker_last_seen.keys()):
+        if wid not in walker_ids_this_tick:
+            walker_last_seen[wid] += 1
+            if walker_last_seen[wid] > GRACE_TICKS:
+                colliding_walker_ids.discard(wid)
+                del walker_last_seen[wid]
+
+    new_collisions = walker_ids_this_tick - colliding_walker_ids
+    if new_collisions:
+        walker_collisions_ref[0] += len(new_collisions)
+        print(f"Walker/Cone Collision(s) Detected: {new_collisions}")
+    colliding_walker_ids |= walker_ids_this_tick
+
+    # Near-miss (only when no active collision)
+    all_walker_bbs = [bb for _, bb in walker_bbs] + traffic_cone_bbs
+    if not walker_ids_this_tick and all_walker_bbs:
+        combined_obs = obstacle_map_from_bbs(all_walker_bbs, collision_tracker).obs
+        combined_obs[0, :] = 0; combined_obs[-1, :] = 0
+        combined_obs[:, 0] = 0; combined_obs[:, -1] = 0
+        _w2 = combined_obs
+        combined_obs = _w2 | np.roll(_w2, 1, 0) | np.roll(_w2, -1, 0) | np.roll(_w2, 1, 1) | np.roll(_w2, -1, 1)
+        distance = near_miss(collision_mask, combined_obs)
+        if 0 < distance < near_miss_threshold:
+            near_miss_min_distance = min(near_miss_min_distance, distance) if near_miss_active else distance
+            near_miss_active = True
+        else:
+            if near_miss_active:
+                near_misses_ref[0] += 1
+                print(f"Near-miss! Closest distance: {near_miss_min_distance:.2f}m")
+            near_miss_active = False
+    elif not walker_ids_this_tick:
+        near_miss_active = False
+
+    return prev_vehicle_count, near_miss_active, near_miss_min_distance
+
 
 
 def obb_aabb_overlap(cur, front_m, rear_m, half_w, aabb):
@@ -545,32 +562,32 @@ def draw_car(parking_scenario, world):
     length_front = car.front_m
     length_rear  = car.rear_m
     width        = car.half_width_m * 2
-    # Use car.car.cur to match exactly what generate_collision_mask uses
     cur = car.cur
     yaw = cur.angle  # already in radians
 
-    # define rectangle corners in local frame
     local_corners = np.array([
         [-length_rear, -width/2],
         [-length_rear,  width/2],
         [ length_front,  width/2],
-        [ length_front, -width/2]
+        [ length_front, -width/2],
     ])
-    R = np.array([[np.cos(yaw), -np.sin(yaw)],
-        [np.sin(yaw),  np.cos(yaw)]])
+    R = np.array([
+        [np.cos(yaw), -np.sin(yaw)],
+        [np.sin(yaw),  np.cos(yaw)],
+    ])
 
     world_corners = [np.dot(R, corner) + np.array([cur.x, cur.y]) for corner in local_corners]
 
     for i in range(4):
         p1 = world_corners[i]
-        p2 = world_corners[(i+1)%4]
+        p2 = world_corners[(i+1) % 4]
         world.debug.draw_line(
             carla.Location(x=p1[0], y=p1[1], z=loc.z + 0.1),
             carla.Location(x=p2[0], y=p2[1], z=loc.z + 0.1),
             thickness=0.5,
             color=carla.Color(r=255, g=0, b=0),
             life_time=1,
-            persistent_lines=True
+            persistent_lines=True,
         )
 
 

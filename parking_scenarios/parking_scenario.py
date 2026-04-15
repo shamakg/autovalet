@@ -100,7 +100,7 @@ class ParkingScenario(BasicScenario):
 
         self.car.run_step()
         
-        self.timeout = 60
+        self.timeout = 120
 
         # self.all_scenario_classes = None
         # self.ego_data = None
