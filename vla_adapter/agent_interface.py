@@ -93,12 +93,7 @@ class SimLingoAdapter(LingoAgent):
         loc = actor.get_location()
         
         # Single source of truth for destination — raw spot centre + angle.
-        # _destination_bb is the spot footprint; is_done fires when actor is inside it.
         self._destination = destination
-        self._destination_bb = [
-            destination.x - 2.4, destination.y - 0.96,
-            destination.x + 2.4, destination.y + 0.96,
-        ]
         self._dest_angle = dest_angle
 
         # ---------------------------------------------------------------
@@ -111,8 +106,8 @@ class SimLingoAdapter(LingoAgent):
         
         ### Add start position, + two positions for straightening out into the spot
         point = carla.Location(
-            x=destination.x - 2 * SPACING * np.cos(dest_angle),
-            y=destination.y - 2 * SPACING * np.sin(dest_angle),
+            x=destination.x - 4 * SPACING * np.cos(dest_angle),
+            y=destination.y - 4 * SPACING * np.sin(dest_angle),
             z=loc.z
         )
         route.append((carla.Transform(point), RoadOption.LANEFOLLOW))
@@ -283,7 +278,7 @@ class SimLingoAdapter(LingoAgent):
         front_x = loc.x + half_len * np.cos(yaw)
         front_y = loc.y + half_len * np.sin(yaw)
 
-        dist = np.sqrt((front_x - self._destination.x)**2 + (front_y - self._destination.y)**2)
+        dist = np.sqrt(0.75 * (front_x - self._destination.x)**2 + 1.5 * (front_y - self._destination.y)**2)
         done = dist < 0.7
         print(f"DIST FROM DEST {dist}")
         return done

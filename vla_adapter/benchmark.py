@@ -34,6 +34,7 @@ from testbed.v2_experiment_utils import (
     town04_spectator_bev,
 )
 from testbed.recording_utils import (
+    ego_to_world,
     finalize_recording,
     init_recording,
     make_cleanup_handler,
@@ -236,6 +237,13 @@ def run_scenario(
             control = adapter.run_step_testbed(timestamp)
             print(f"applying: t={control.throttle:.3f} s={control.steer:.3f} b={control.brake:.3f}")
             parking_scenario.car.actor.apply_control(control)
+
+            if adapter.latest_pred_route is not None:
+                loc = parking_scenario.car.actor.get_location()
+                yaw = np.deg2rad(parking_scenario.car.actor.get_transform().rotation.yaw)
+                world_traj = ego_to_world(adapter.latest_pred_route, loc.x, loc.y, yaw)
+                trajectory_log.append(world_traj)
+                parking_scenario.car.latest_trajectory = world_traj
 
             if parking_scenario.scenario_tree:
                 parking_scenario.scenario_tree.tick_once()
