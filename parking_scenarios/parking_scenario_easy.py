@@ -65,9 +65,9 @@ from v2_experiment import NUM_RANDOM_CARS
 
 class ParkingScenarioEasy(BasicScenario):
     category = "ParkingScenario"
-    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, timeout = 60, mode = None):
+    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, timeout = 60, mode = None, car_class=None):
 
-        self.config = config
+
         self.world = world
         self.parked_spots = parked
         
@@ -79,47 +79,59 @@ class ParkingScenarioEasy(BasicScenario):
         self.DISTANCE_TRIGGER = 100
 
 
-        self.parked_cars, self.parked_cars_bbs = town04_spawn_parked_cars(world, parked, destination, NUM_RANDOM_CARS)
-
+        self.config = config
+        self.debug_mode = debug_mode
         self.criteria_enable = criteria_enable
         
+        
         # load car
-        self.car = town04_spawn_ego_vehicle(world, destination)
+        self.car = town04_spawn_ego_vehicle(world, destination, car_class=car_class)
 
         CarlaDataProvider.register_actor(self.car.actor)
 
-        # HACK: enable perfect perception of parked cars
-        self.car.car.obs = self.parked_cars_bbs
-
-        # HACK: set lane waypoints to guide parking in adjacent lanes
-        self.car.car.lane_wps = parking_lane_waypoints_Town04
-        ### Recording Logic
-        # self.record()
-        world.tick()
+        self.world.tick()
         
+        self.timeout = 70
 
-        self.car.run_step()
-        
-        self.timeout = timeout
+        # self.all_scenario_classes = None
+        # self.ego_data = None
+
+        # self.scenario_triggerer = None
+        # # self.behavior_node = None # behavior node created by _create_behavior()
+        # # self.criteria_node = None # criteria node created by _create_test_criteria()
 
         self.list_scenarios = []
+        # self.occupied_parking_locations = []
+        # self.available_parking_locations = []
+
+        # scenario_configurations = self._filter_scenarios(config.scenario_configs) ## can add logic to modularize the configs later
+        # self.scenario_configurations = scenario_configurations
+        # self.missing_scenario_configurations = scenario_configurations.copy()
 
         if self.car is None:
             raise ValueError("Shutting down, couldn't spawn the ego vehicle")
 
-        # self.world.tick()
-        self.build_scenarios(self.car.actor)
+        # HACK: set lane waypoints to guide parking in adjacent lanes
+        self.car.car.lane_wps = parking_lane_waypoints_Town04
 
-        for _ in range(10):
-            self.world.tick()
-            
+
+        self.parked_cars, self.parked_cars_bbs, self.parked_cars_and_spots_bbs = town04_spawn_parked_cars(world, parked, destination, NUM_RANDOM_CARS)
+        # Tick once so CARLA's synchronous-mode actor registry reflects all newly
+        # spawned parked cars before build_scenarios() queries get_actors() and
+        # before _get_all_occupied_spots() calls car.get_location(). Without this
+        # tick the cone scenario sees an empty vehicles_nearby list and places cones
+        # on top of freshly spawned parked vehicles.
+        world.tick()
+
+        self.build_scenarios(self.car.actor)
 
         super().__init__(
             config.name, [self.car.actor], config, world, debug_mode > 3, False, criteria_enable
         )
 
-        # self.remove_update()
-        self.world.tick()
+        
+
+        self.remove_update()
 
 
     def remove_update(self):
@@ -148,19 +160,29 @@ class ParkingScenarioEasy(BasicScenario):
     
     
     
+    def _get_all_occupied_spots(self):
+        occupied = set(self.parked_spots)
+        for car in self.parked_cars:
+            car_loc = car.get_location()
+            for i, spot_loc in enumerate(parking_vehicle_locations_Town04):
+                if abs(car_loc.x - spot_loc.x) < 2.0 and abs(car_loc.y - spot_loc.y) < 2.0:
+                    occupied.add(i)
+                    break
+        return list(occupied)
+
     def load_parking_cones(self, ego_location):
         """Load parking cones in empty spots"""
         config = ScenarioConfiguration()
         config.name = "ParkingCones"
         config.type = "ParkingCones"
         config.town = "Town04_Opt"
-        
+
         cones_scenario = ParkingConeScenario(
             world=self.world,
             ego_vehicles=[self.car.actor],
             config=config,
             destination_spot=self.destination_parking_spot,
-            parked_spots=self.parked_spots,
+            parked_spots=self._get_all_occupied_spots(),
             criteria_enable=self.criteria_enable,
             timeout=self.timeout
         )

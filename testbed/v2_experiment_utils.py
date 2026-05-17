@@ -67,6 +67,23 @@ def town04_load(client):
     world.apply_settings(settings)
     client.reload_world(False)
     world.unload_map_layer(carla.MapLayer.ParkedVehicles)
+
+    all_env_objects = world.get_environment_objects(carla.CityObjectLabel.Any)
+
+    # 2. Filter for IDs where the name matches your lamppost/light strings
+    ids_to_hide = []
+    for obj in all_env_objects:
+        if any(key in obj.name for key in ['Lamppost', 'StreetLight', 'HighwayLight']):
+            ids_to_hide.append(obj.id)
+
+    # 3. Pass the list of IDs (unsigned longs), not the names
+    if ids_to_hide:
+        world.enable_environment_objects(ids_to_hide, False)
+        print(f"Successfully hid {len(ids_to_hide)} light posts.")
+    else:
+        print("No light posts found matching those keywords.")
+
+
     return world
 
 def town04_spawn_ego_vehicle(world, destination_parking_spot, car_class=None):
@@ -292,7 +309,7 @@ def get_bounding_boxes(parking_scenario, debug = True, life_time = 1):
             continue
 
         bbox = oriented_bbox(walker, walker.bounding_box)
-        moving_cars_bbs.append(bbox)
+        walker_bbs.append((walker.id, bbox))
         # _draw_bb(world, bbox, carla.Color(0, 0, 255), life_time)
 
     return moving_cars_bbs, traffic_cone_bbs, walker_bbs

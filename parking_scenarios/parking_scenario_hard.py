@@ -105,7 +105,8 @@ class ParkingScenarioHard(BasicScenario):
             self.parked_cars, self.parked_cars_bbs, self.parked_cars_and_spots_bbs = town04_spawn_parked_cars_with_doors(world, parked, destination, NUM_RANDOM_CARS)
         else:
             self.parked_cars, self.parked_cars_bbs, self.parked_cars_and_spots_bbs = town04_spawn_parked_cars(world, parked, destination, NUM_RANDOM_CARS)
-        
+        world.tick()  # register freshly spawned parked cars before building scenarios
+
         self.build_scenarios(self.car.actor)
 
         super().__init__(

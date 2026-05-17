@@ -8,4 +8,4 @@ export PYTHONPATH="${CARLA_ROOT}:${SCENARIO_RUNNER_ROOT}:${LEADERBOARD_ROOT}:${P
 source /opt/ros/humble/setup.bash
 export HOST=localhost
 
-/home/sumesh/miniforge3/envs/carla/bin/python3 '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/runner_test_medium.py'
+python '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/default_runner.py' --mode collide

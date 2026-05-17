@@ -1,0 +1,46 @@
+This is intended to benchmark the Diffusion-Planner model on our custom Carla testbed
+
+GOALS: Benchmark Diffusion-Planner as faithfully as possible. I would like to try to not feed in the model
+too much privileged information. 
+
+Key Desired Inputs:
+External agent positions + bounding boxes (these have Gaussian noise applied to them in v2.py)
+    - Parked Vehicles (there are several rows of these, which would be OOD of the model. Is there any way to still integrate parked vehicles). If this
+    becomes a problem, we can filter parked vehicles and just include the ones the car is currently near in order to avoid them
+    - Opposite Moving Vehicles
+    - Pedestrians
+    - I don't think we would be feeding agent velocities to the model (ideally the diffusion model would figure this out). Instead, we must give accurate
+    agent histories to the diffusion-planner
+Route Lanes + Lanes
+    - Lanes are where the car is "allowed" to go. We can leave this empty since this is a parking lot (if needed, this can definitely be modified)
+    - Route Lanes are where the car is supposed to go. Ideally, we would like this to just be a goal waited straight line from the car's current position
+    to the destination parking spot at all times (This can be updated dynamically). If REALLY needed, this can be updated, but I would like not to give the car too
+    much privileged information in order to properly benchmark the model because this can tell us if the ego is ACTUALLY avoiding parked cars. Another strategy could be feeding it a very 
+    short line that is oriented in the direction of the goal. OR we could not use route lane and just let the guidance function do the heavy lifting. I want to use the option that incites the best performance
+    of our model, according to our tests.
+Guidance Function
+    - The goal is to make the guidance function as simple as possible, but complexity may be needed in order for it to be effective
+    - According to the paper, the guidance function is very important in model accuracy
+    - Guidance implementation instructions are here: /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/Diffusion-Planner/diffusion_planner/model/guidance/documentation_guidance.md
+    - An example wrapper can be shown here: /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/Diffusion-Planner/diffusion_planner/model/guidance/guidance_wrapper.py
+    - Try to be creative with the guidance function to give the model the best chance at working, in order to properly benchmark it
+    - This model was trained on nuplan highway data, so results won't be perfect, but the goal is to get them as near perfect as possible
+There are possibly other important inputs and parameters, so we must keep aware of this when debugging or explaining unexpected behavior
+
+
+Tests
+    - Tests that ALL axes are correct
+    - Are agent bounding boxes/ external actors being fed correctly into the model
+    - Are lane waypoints being fed correctly into the model
+    - Is the predicted path being visualized correctly
+    - Is the predicted path being fed into the planner correctly
+    - Is the guidance function being properly applied? Is it pulling the car towards to goal?
+    - In Carla Tests
+        - Are there any success cases? Ideally there should be a few, or the car should be going in the general direction of the parking spot, even if it fails to park
+        - What is the general behavior of the car? Is it expected
+        - Does the car SOMEWHAT understand to slow down for pedestrians?
+    - Test strategy: Rather than just testing if things "work," every time we try to fix an error, we should try to isolate errors through targeted tests which we can then fix
+
+
+I know this adapter can be improved due to generally good results when feeding in the Hybrid A* path as a prior to the model (this was used with adapter.py and is the current pushed version of the diffusion_improvved branch).
+I don't want to feed in Hybrid A* for this version

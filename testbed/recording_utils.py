@@ -13,7 +13,7 @@ from v2 import Mode
 import subprocess
 
 
-def init_recording(car, recording_path, width=480, height=320, fps=20, top_down=False):
+def init_recording(car, recording_path, width=1280, height=720, fps=20, top_down=False):
         world = car.world
         actor = car.actor
         cam_bp = world.get_blueprint_library().find('sensor.camera.rgb')
@@ -84,6 +84,7 @@ def process_recording_frames(car):
                        for x, y in car.latest_trajectory]
                 pts_np = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
                 cv2.polylines(data, [pts_np], isClosed=False, color=(0, 255, 0), thickness=2)
+            
             writer.write(data)
             if car.car.mode == Mode.PARKED:
                 car.has_recorded_segment = True

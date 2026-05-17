@@ -287,11 +287,30 @@ class PedestrianCrossingParking(BasicScenario):
                 walker.destroy()
         except:
             pass
-        spawn_transform.location.z = 0.5
+        # Spawn at a safe initial z so the actor exists for BB query
+        spawn_transform.location.z = 1.0
         walker = CarlaDataProvider.request_new_actor(type_id, spawn_transform)
         if not walker:
             raise ValueError("Couldn't spawn the walker substitute")
         walker.set_simulate_physics(False)
+
+        # Compute correct z: terrain + BB half-height + clearance.
+        # The old hardcoded z=0.5 placed the origin at BB-centre height 0.5 m,
+        # so feet were at z = 0.5 − 0.93 = −0.43 m — visibly underground.
+        # ground_projection gives true terrain z (not actor geometry) when
+        # probed from well above the spawn point.
+        probe = carla.Location(
+            x=spawn_transform.location.x,
+            y=spawn_transform.location.y,
+            z=10.0,
+        )
+        proj = CarlaDataProvider.get_world().ground_projection(probe, 20.0)
+        if proj:
+            bb_half_h = walker.bounding_box.extent.z  # model-specific half-height
+            spawn_transform.location.z = proj.location.z + bb_half_h + 0.1
+        else:
+            spawn_transform.location.z = 1.2  # safe fallback above typical terrain
+
         walker.set_location(spawn_transform.location)
         return walker
     

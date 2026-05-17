@@ -9,7 +9,7 @@ import py_trees
 
 from parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
 
-from testbed.v2_experiment_utils_static import (
+from testbed.v2_experiment_utils import (
     obstacle_map_from_bbs,
     town04_spawn_ego_vehicle,
     town04_spawn_parked_cars,
@@ -69,7 +69,7 @@ class ParkingScenarioMedium(BasicScenario):
         world.tick()
         
         
-        self.timeout = 60
+        self.timeout = 75
 
         # self.all_scenario_classes = None
         # self.ego_data = None
@@ -92,7 +92,7 @@ class ParkingScenarioMedium(BasicScenario):
         # HACK: set lane waypoints to guide parking in adjacent lanes
         self.car.car.lane_wps = parking_lane_waypoints_Town04
         self.parked_cars, self.parked_cars_bbs, self.parked_cars_and_spots_bbs = town04_spawn_parked_cars(world, parked, destination, NUM_RANDOM_CARS)
-
+        world.tick()  # register freshly spawned parked cars before building scenarios
 
         self.build_scenarios(self.car.actor)
 

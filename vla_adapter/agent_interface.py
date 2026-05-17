@@ -14,6 +14,8 @@ from v2 import CarlaGnssSensor, CarlaTimeSensor, CarlaCollisionSensor, Trajector
 from team_code.transfuser_utils import inverse_conversion_2d, preprocess_compass
 save_dir = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/results/save_trajectory"
 
+
+#### IMPORTANT: THIS must be run with the Lincoln blueprint
 class SimLingoAdapter(LingoAgent):
     def init_testbed(self, checkpoint_path, world, actor, destination, angle, save_path='/tmp/simlingo'):
         # Path to where visualizations and other debug output gets stored, from agent_simlingo.py
@@ -58,7 +60,7 @@ class SimLingoAdapter(LingoAgent):
 
         ### Prompting the car!!!
         dest_angle = angle
-        self.custom_prompt = f"Park the vehicle in the parking spot ahead. The target parking spot is at location {destination.x}, {destination.y} in the CARLA frame. The target parking orientation is {np.rad2deg(dest_angle):.0f} degrees."
+        self.custom_prompt = f"Park the vehicle in the parking spot ahead. The target parking spot is at location {destination.x}, {destination.y}. The target parking orientation is {np.rad2deg(dest_angle):.0f} degrees. Qualitatively, the spot is ____ spots forward on the _____. Align properly with the spot when parking, avoid all parked cars and pedestrians and stay within the main parking lane."
         self.metric_info = {}
         self.hero_actor = actor
 
@@ -123,6 +125,7 @@ class SimLingoAdapter(LingoAgent):
         # ---------------------------------------------------------------
     
         cfg = self.config
+        self.world = world
 
         # ---------------------------------------------------------------
     
@@ -159,8 +162,53 @@ class SimLingoAdapter(LingoAgent):
         print(f"camera_width_0: {cfg.camera_width_0}")
         print(f"camera_height_0: {cfg.camera_height_0}")
         self.draw_route_waypoints(world)
+        self._wrap_model_for_timing()
 
         # ---------------------------------------------------------------
+
+    def _wrap_model_for_timing(self, warmup_steps=10):
+        import time as wall_time
+        adapter = self
+        original_model = self.model
+        state = {'calls': 0, 'warmup': warmup_steps}
+
+        class _TimedModel:
+            def __call__(self_, *args, **kwargs):
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                t0 = wall_time.perf_counter()
+                result = original_model(*args, **kwargs)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                elapsed = (wall_time.perf_counter() - t0) * 1000.0
+
+                state['calls'] += 1
+                if state['calls'] > state['warmup']:
+                    adapter.last_inference_latency_ms = elapsed
+
+                return result
+
+            def __getattr__(self_, name):
+                return getattr(original_model, name)
+
+        self.model = _TimedModel()
+        self.last_inference_latency_ms = 0.0
+
+    def run_step(self, input_data, timestamp, sensors=None):
+        import time as wall_time
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        start_time = wall_time.perf_counter()
+
+        result = super().run_step(input_data, timestamp, sensors)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        end_time = wall_time.perf_counter()
+
+        self.last_pipeline_latency_ms = (end_time - start_time) * 1000.0
+        return result
 
     def run_step_testbed(self, timestamp):
         if self.latest_frame is None:
@@ -168,9 +216,6 @@ class SimLingoAdapter(LingoAgent):
             return carla.VehicleControl(brake=1.0)
 
         print("STEP:", self.step)
-
-        if self.latest_frame is None:
-            return carla.VehicleControl(brake=1.0)
 
         actor = self.hero_actor
         loc = actor.get_location()
@@ -190,9 +235,6 @@ class SimLingoAdapter(LingoAgent):
         data = np.frombuffer(self.latest_frame.raw_data, dtype=np.uint8)
         rgb = data.reshape((self.latest_frame.height, self.latest_frame.width, 4))[:, :, :3]
 
-        # cv2.imwrite(f'{"/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/results/3zvision"}/frame_{self.step:04d}.jpg', rgb[:, :, ::-1])
-
-
         acc = actor.get_acceleration()
         ang_vel = actor.get_angular_velocity()
 
@@ -207,42 +249,29 @@ class SimLingoAdapter(LingoAgent):
             ])),
         }
         
-    # ---------------------------------------------------------------   
-
-        ## debug print
-        # print(f"dest_angle: {np.rad2deg(self._dest_angle):.1f} deg")
-        # print(f"car yaw: {np.rad2deg(yaw):.1f} deg")
-        # print(f"direct vec to dest: dx={self._destination.x - loc.x:.2f}, dy={self._destination.y - loc.y:.2f}")
-        forward = actor.get_transform().get_forward_vector()
-        # print(f"forward vector: x={forward.x:.2f}, y={forward.y:.2f}")
-        # print(f"yaw: {transform.rotation.yaw:.1f}")
-        # print(f"gps: {gps}")
-        # print(f"loc: {loc.x}, {loc.y}")
         gps_pos = self._route_planner.convert_gps_to_carla(gps)
-        # print(f"gps_pos (route planner coords): {gps_pos[:2]}")
-        # print(f"actual loc (world coords): {loc.x:.2f}, {loc.y:.2f}")
-        # print(f"route waypoint 0: {self._route_planner.route[0][0][:2]}")
-        # print(f"route waypoint 1: {self._route_planner.route[1][0][:2]}")
         waypoint_route = self._route_planner.run_step(np.append(gps_pos[:2], gps[2]))
+        
         if len(waypoint_route) > 1:
             target_point = waypoint_route[1][0]
-            
             compass = preprocess_compass(input_data['imu'][1][-1])
             ego_tp = inverse_conversion_2d(target_point[:2], gps_pos[:2], compass)
-
             self.draw_planned_path(target_point, compass, ego_tp, rgb)
-
             print(f"ego_target_point: {ego_tp}")
             print(f"target world coords: {target_point[:2]}")
             print(f"Destination: {self._destination}")
-
-    # ---------------------------------------------------------------   
-
 
         result = self.run_step(input_data, timestamp)
         return result
 
 
+
+    def control_pid(self, route_waypoints, velocity, speed_waypoints):
+        # Fix for inhomogeneous shape error in SimLingo's PIDController.
+        # We flatten the velocity tensor so that velocity[0] results in a scalar-like array.
+        if isinstance(velocity, torch.Tensor):
+            velocity = velocity.view(-1)
+        return super().control_pid(route_waypoints, velocity, speed_waypoints)
 
     # HACK
     def get_metric_info(self):
@@ -269,6 +298,7 @@ class SimLingoAdapter(LingoAgent):
     #     print(f"DIST {dist:.2f}  ANGLE_DIFF {angle_diff:.1f}")
     #     return dist < threshold  # and angle_diff < angle_threshold_deg
 
+    ## Privileged success tracker 
     def is_done(self, destination):
         loc = self.hero_actor.get_location()
         yaw = np.deg2rad(self.hero_actor.get_transform().rotation.yaw)
@@ -278,9 +308,17 @@ class SimLingoAdapter(LingoAgent):
         front_x = loc.x + half_len * np.cos(yaw)
         front_y = loc.y + half_len * np.sin(yaw)
 
-        dist = np.sqrt(0.75 * (front_x - self._destination.x)**2 + 1.5 * (front_y - self._destination.y)**2)
-        done = dist < 0.7
-        print(f"DIST FROM DEST {dist}")
+
+        dx = front_x - self._destination.x
+        dy = front_y - self._destination.y
+        along = dx * np.cos(self._dest_angle) + dy * np.sin(self._dest_angle)
+        across = abs(-dx * np.sin(self._dest_angle) + dy * np.cos(self._dest_angle))
+
+        # `along` is positive when past the line, negative when still approaching.
+        done = along > -0.5
+
+
+        print(f"DEPTH TO FAR EDGE {along:.2f}m  ACROSS {across:.2f}m")
         return done
 
         
@@ -487,26 +525,42 @@ class SimLingoAdapter(LingoAgent):
         return
         debug = world.debug
         route = self._route_planner.route
+        n = len(route)
+        if n == 0:
+            return
 
         for i, (wp, _) in enumerate(route):
             x, y, z = wp[0], wp[1], wp[2]
+            t = i / max(n - 1, 1)  # 0.0 at start, 1.0 at end
 
-            color = carla.Color(r=255, g=0, b=0) if i == len(route) - 1 else carla.Color(r=0, g=255, b=0)
-            debug.draw_point(
-                carla.Location(x=x, y=y, z=z + 0.5),
-                size=0.1,
-                color=color,
-                life_time=duration
-            )
+            # gradient: green -> yellow -> red
+            r = int(255 * min(2 * t, 1.0))
+            g = int(255 * min(2 * (1 - t), 1.0))
+            grad = carla.Color(r=r, g=g, b=0)
 
-            if i < len(route) - 1:
+            if i == 0:
+                # start: large white dot + label
+                debug.draw_point(carla.Location(x=x, y=y, z=z + 0.6), size=0.2,
+                                 color=carla.Color(255, 255, 255), life_time=duration)
+                debug.draw_string(carla.Location(x=x, y=y, z=z + 1.2), "START",
+                                  draw_shadow=True, color=carla.Color(255, 255, 255), life_time=duration)
+            elif i == n - 1:
+                # end: large magenta dot + label
+                debug.draw_point(carla.Location(x=x, y=y, z=z + 0.6), size=0.2,
+                                 color=carla.Color(255, 0, 255), life_time=duration)
+                debug.draw_string(carla.Location(x=x, y=y, z=z + 1.2), "DEST",
+                                  draw_shadow=True, color=carla.Color(255, 0, 255), life_time=duration)
+            else:
+                debug.draw_point(carla.Location(x=x, y=y, z=z + 0.5), size=0.08,
+                                 color=grad, life_time=duration)
+
+            if i < n - 1:
                 nx, ny, nz = route[i + 1][0]
-                debug.draw_line(
+                debug.draw_arrow(
                     carla.Location(x=x, y=y, z=z + 0.5),
                     carla.Location(x=nx, y=ny, z=nz + 0.5),
-                    thickness=0.05,
-                    color=carla.Color(r=0, g=200, b=255),
-                    life_time=duration
+                    thickness=0.04, arrow_size=0.15,
+                    color=grad, life_time=duration
                 )
 
     def draw_planned_path(self, target_point, compass, ego_tp, rgb):

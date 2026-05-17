@@ -36,3 +36,8 @@ torchvision = { index = "pytorch" }
 name = "pytorch"
 url = "https://download.pytorch.org/whl/cu113"
 explicit = true
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that require a live CARLA server on localhost:2000",
+]

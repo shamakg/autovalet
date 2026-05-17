@@ -32,4 +32,12 @@ export HF_DATASETS_OFFLINE=1
 
 source /home/sumesh/envs/simlingo/bin/activate
 
-cd ~/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model && python3 '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/benchmark.py'
+cd ~/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model 
+python3 '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/benchmark.py'
+
+# python3 '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/benchmark.py' --mode STOP_EARLY
+# python3 '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/benchmark.py' --mode MISS
+# python3 '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/benchmark.py' --mode COLLIDE
+
+
+

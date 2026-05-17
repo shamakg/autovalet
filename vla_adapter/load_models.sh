@@ -1,5 +1,7 @@
 #!/bin/bash
 
+source /home/sumesh/envs/simlingo/bin/activate
+
 # Re-download SimLingo checkpoint
 HF_HOME=/tmp/hf_cache huggingface-cli download RenzKa/simlingo \
     simlingo/checkpoints/epoch=013.ckpt/pytorch_model.pt \
