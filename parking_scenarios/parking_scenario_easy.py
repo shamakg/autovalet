@@ -1,7 +1,8 @@
 import importlib
 from parking_scenarios.parking_cone import ParkingConeScenario
-from srunner.scenariomanager.scenarioatomics.atomic_behaviors import ScenarioTimeout, ScenarioTriggerer, UpdateAllActorControls
-from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest, ScenarioTimeoutTest
+from srunner.scenariomanager.scenarioatomics.atomic_behaviors import ScenarioTriggerer, UpdateAllActorControls
+from srunner.scenariomanager.timer import TimeOut
+from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest
 from srunner.scenarios.background_activity import BackgroundBehavior
 from parking_scenarios.vehicle_opens_door_parking import VehicleOpensDoorTwoWaysParking
 from srunner.scenarios.basic_scenario import BasicScenario
@@ -65,7 +66,7 @@ from v2_experiment import NUM_RANDOM_CARS
 
 class ParkingScenarioEasy(BasicScenario):
     category = "ParkingScenario"
-    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, timeout = 60, mode = None, car_class=None):
+    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, mode = None, car_class=None, start_y_offset=0.0, start_x_offset=0.0, spawn_cones=True, spawn_parked=True):
 
 
         self.world = world
@@ -82,16 +83,17 @@ class ParkingScenarioEasy(BasicScenario):
         self.config = config
         self.debug_mode = debug_mode
         self.criteria_enable = criteria_enable
+        self.spawn_cones = spawn_cones
+        self.spawn_parked = spawn_parked
         
         
         # load car
-        self.car = town04_spawn_ego_vehicle(world, destination, car_class=car_class)
+        self.car = town04_spawn_ego_vehicle(world, destination, car_class=car_class, start_y_offset=start_y_offset, start_x_offset=start_x_offset)
 
         CarlaDataProvider.register_actor(self.car.actor)
 
         self.world.tick()
         
-        self.timeout = 70
 
         # self.all_scenario_classes = None
         # self.ego_data = None
@@ -115,7 +117,11 @@ class ParkingScenarioEasy(BasicScenario):
         self.car.car.lane_wps = parking_lane_waypoints_Town04
 
 
-        self.parked_cars, self.parked_cars_bbs, self.parked_cars_and_spots_bbs = town04_spawn_parked_cars(world, parked, destination, NUM_RANDOM_CARS)
+        if self.spawn_parked:
+            self.parked_cars, self.parked_cars_bbs, self.parked_cars_and_spots_bbs = town04_spawn_parked_cars(world, parked, destination, NUM_RANDOM_CARS)
+        else:
+            # Fully empty lot (e.g. controller GT-following test): no parked cars.
+            self.parked_cars, self.parked_cars_bbs, self.parked_cars_and_spots_bbs = [], [], []
         # Tick once so CARLA's synchronous-mode actor registry reflects all newly
         # spawned parked cars before build_scenarios() queries get_actors() and
         # before _get_all_occupied_spots() calls car.get_location(). Without this
@@ -125,6 +131,7 @@ class ParkingScenarioEasy(BasicScenario):
 
         self.build_scenarios(self.car.actor)
 
+        self.timeout = 140
         super().__init__(
             config.name, [self.car.actor], config, world, debug_mode > 3, False, criteria_enable
         )
@@ -184,7 +191,6 @@ class ParkingScenarioEasy(BasicScenario):
             destination_spot=self.destination_parking_spot,
             parked_spots=self._get_all_occupied_spots(),
             criteria_enable=self.criteria_enable,
-            timeout=self.timeout
         )
         
         self.list_scenarios.append(cones_scenario)
@@ -226,7 +232,8 @@ class ParkingScenarioEasy(BasicScenario):
 
          #-------------------------------------------------------
 
-        new_scenarios.append(self.load_parking_cones(ego_location))
+        if self.spawn_cones:
+            new_scenarios.append(self.load_parking_cones(ego_location))
         
 
 
@@ -257,6 +264,9 @@ class ParkingScenarioEasy(BasicScenario):
         # # Add the Background Activity -- if we want can add extra cars
         # behavior.add_child(BackgroundBehavior(self.car.actor, dummy_route, name="BackgroundActivity"))
 
+        if not scenario_behaviors:
+            scenario_behaviors.append(py_trees.behaviours.Running(name="wait"))
+
         behavior.add_children(scenario_behaviors)
 
         return behavior
@@ -264,10 +274,9 @@ class ParkingScenarioEasy(BasicScenario):
 
     def _create_test_criteria(self):
         criteria = [
-                ScenarioTimeoutTest(self.ego_vehicles[0], self.config.name),
                 CollisionTest(self.ego_vehicles[0], other_actor_type="vehicle", name="VehicleCollisionTest"),
                 CollisionTest(self.ego_vehicles[0], other_actor_type="walker", name="PedestrianCollisionTest"),
-                ]        
+                ]
         for scenario in self.list_scenarios:
             if hasattr(scenario, "_create_test_criteria"):
                 sub_criteria = scenario.get_criteria()
@@ -282,7 +291,10 @@ class ParkingScenarioEasy(BasicScenario):
     
     def _setup_scenario_end(self, config):
         return None
-    
+
+    def _create_timeout_behavior(self):
+        return TimeOut(self.timeout, name="TimeOut")
+
     ## From Route Scenario
     def cleanup(self):
         """

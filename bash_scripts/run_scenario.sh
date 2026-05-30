@@ -8,4 +8,4 @@ export PYTHONPATH="${CARLA_ROOT}:${SCENARIO_RUNNER_ROOT}:${LEADERBOARD_ROOT}:${P
 source /opt/ros/humble/setup.bash
 export HOST=localhost
 
-python '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/default_runner.py' --mode collide
+python '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/default_runner.py' --mode $1

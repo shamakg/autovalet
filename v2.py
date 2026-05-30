@@ -468,6 +468,10 @@ class Car():
         self.trajectory: List[TrajectoryPoint] = []
         self.ti = 0
         self.mode = Mode.DRIVING
+        # True while deliberately yielding to a dynamic obstacle. Saved labels
+        # collapse the route to the ego origin during these frames so the model
+        # learns to stop (control already brakes via Mode.STALLED).
+        self.waiting = False
         self.prev_obs_hash = None
         self.world = world
         
@@ -662,6 +666,7 @@ class Car():
                 else:
                     print("Dynamic obstacle on path, waiting...")
                     self.mode = Mode.STALLED
+                    self.waiting = True
             else:
                 new_trajectory = plan_hybrid_a_star(cur, destination, self.obs)
 
@@ -679,6 +684,7 @@ class Car():
                     trajectory = self.trajectory = new_trajectory
                     self.stagnation_history = []
                     self.mode = Mode.DRIVING
+                    self.waiting = False
                     self._last_collision_replan_time = self.time
                 else:
                     has_dynamic_blocker = len(self.obs.dyn_obs_clusters) > 0
@@ -696,6 +702,7 @@ class Car():
                         else:
                             print("Path blocked by dynamic obstacle, waiting...")
                             self.mode = Mode.STALLED
+                            self.waiting = True
                     else:
                         self.obs.obs[1:-1, 1:-1] = 0
                         self.ti = 0
@@ -712,10 +719,12 @@ class Car():
             else:
                 print("Waiting for Dynamic Crosser...")
                 self.mode = Mode.STALLED
+                self.waiting = True
         elif not has_collision:
             self.crossing_start_time = None
             if self.mode == Mode.STALLED and len(self.trajectory) > 0:
                 self.mode = Mode.DRIVING
+                self.waiting = False
                 
         # decay all obstacles except the edges
         # self.obs.obs[1:-1, 1:-1] *= 0.99

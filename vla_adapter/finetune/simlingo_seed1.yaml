@@ -1,7 +1,9 @@
 # @package _global_
 defaults:
-  - /data_module: carla_bucket_v12_dreamer
+  - train_base
+  - /data_module: driving
   - /model/vision_model: vlm
+  - /model/language_model: llm
   - /data_module/base_dataset: dataset
 
 model:
@@ -21,32 +23,49 @@ data_module:
   batch_size: 4 # unfortunately don't have access to the SLURM cluster ;(
   num_workers: 4
   # dreamer_dataset: null
+  train_partitions:
+    all: 0.05          # background diversity — downsample boring frames
+    approach: 0.10     # straight approach — still present but reduced
+    swing_out: 0.35    # active lateral turn — critical, upsample ~3.5x
+    final_turn: 0.35   # near-spot alignment — critical, upsample ~3.5x
+    recovery_park: 0.15  # recovery episodes — upsample ~1.5x
   base_dataset:
-    data_path: database/simlingo
-    bucket_path: database/bucketsv2_simlingo
+    data_path: ../finetune/run_001
+    bucket_path: ../finetune/parking_buckets_v1
     pred_len: 11
+    hist_len: 1
+    hist_len_commentary: 5
     cut_bottom_quarter: True
+    skip_first_n_frames: 10
+    num_route_points: 20
+    use_1d_wps: False
     use_commentary: False
     use_qa: False
     qa_augmentation: False
+    commentary_augmentation: True
+    img_augmentation: True
+    img_augmentation_prob: 0.5
     img_shift_augmentation: True
     img_shift_augmentation_prob: 0.5
-    hist_len: 1
     route_as: target_point_command
     use_lmdrive_commands: True
     use_old_towns: True
+    use_only_old_towns: False
     use_town13: True
-
     use_safety_flag: True
 
 max_epochs: 15
 val_every_n_epochs: 2
+precision: 16-mixed
 
-debug: true
-gpus: 1 ### only 1 gpu right now
+debug: false
+gpus: 1 ### only 1 gpu right now ripp
+strategy: deepspeed_stage_2
 seed: 9876
-name: simlingo_seed_9876
-resume: true
+name: parking_ft_v2
+resume: false
+
+checkpoint: /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt
 
 hydra:
   run:

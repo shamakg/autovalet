@@ -11,7 +11,6 @@ from parking_scenarios.parking_scenario_easy import ParkingScenarioEasy
 from parking_scenarios.parking_scenario_medium import ParkingScenarioMedium
 from parking_scenarios.parking_scenario_hard import HardMode, ParkingScenarioHard
 from parking_scenarios.opposite_vehicle_parking import CollisionMode
-from vla_adapter.v2 import ObstacleMap
 from srunner.scenariomanager.timer import GameTime
 from srunner.scenarioconfigs.scenario_configuration import ActorConfigurationData, ScenarioConfiguration
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
@@ -61,6 +60,22 @@ from scenario_utils import (
     analyze_scenario, draw_car, track_collisions,
     calculate_min_distance_to_door, compute_weighted_iou,
 )
+def is_done_geometry(car):
+    """Mirror of SimLingoAdapter.is_done: terminates when the front bumper reaches the far wall."""
+    actor = car.actor
+    dest = car.car.destination
+    half_len = actor.bounding_box.extent.x
+    front_len = half_len + 1.6
+    far_x = dest.x + front_len * np.cos(dest.angle)
+    far_y = dest.y + front_len * np.sin(dest.angle)
+    loc = actor.get_location()
+    yaw = np.deg2rad(actor.get_transform().rotation.yaw)
+    front_x = loc.x + half_len * np.cos(yaw)
+    front_y = loc.y + half_len * np.sin(yaw)
+    along = (front_x - far_x) * np.cos(dest.angle) + (front_y - far_y) * np.sin(dest.angle)
+    return along > -0.1
+
+
 NUM_RANDOM_CARS = 50
 NETWORK_SEND_LATENCIES = [0] # ms
 PERCEPTION_LATENCY = 200 # ms
@@ -71,7 +86,6 @@ PLANNING_PERIOD = 500 # ms
 DATA_COLLECTION_PERIOD = 200 # ms
 SHOULD_PIPELINE = True
 SHOULD_ADJUST_MODEL = False
-TIMEOUT = 120 * 1000 # ms
 IMAGE_DOWNSIZE = 1
 WALL_TIMEOUT = 120 # s
 RECORD = True
@@ -104,8 +118,9 @@ class ScenarioMode(Enum):
     PEDESTRIAN = "pedestrian"
     DOORMODE   = "doormode"
     CONE       = "cone"
+    EMPTY      = "empty"
 
-def run_scenario(world, destination_parking_spot, parked_spots, ious, weighted_ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path=None, car_list=[], scenario_mode=ScenarioMode.CONE):
+def run_scenario(world, destination_parking_spot, parked_spots, ious, weighted_ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path=None, car_list=[], scenario_mode=ScenarioMode.CONE, start_y_offset=0.0, start_x_offset=0.0, on_step=None, on_scenario_ready=None):
     cam1 = None
     cam2 = None
     parking_scenario = None
@@ -134,8 +149,12 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, weighted_i
             parked=parked_spots,
             debug_mode=0,
             criteria_enable=True,
+            start_y_offset=start_y_offset,
+            start_x_offset=start_x_offset,
         )
-        if scenario_mode == ScenarioMode.CONE:
+        if scenario_mode == ScenarioMode.EMPTY:
+            parking_scenario = ParkingScenarioEasy(**common_kwargs, spawn_cones=False)
+        elif scenario_mode == ScenarioMode.CONE:
             parking_scenario = ParkingScenarioEasy(**common_kwargs)
         elif scenario_mode in (ScenarioMode.COLLIDE, ScenarioMode.NEAR_MISS, ScenarioMode.STOP_EARLY):
             collision_mode_map = {
@@ -158,6 +177,9 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, weighted_i
         if recording_path:
             cam1 = init_recording(parking_scenario.car, path_chase, top_down=False)
             cam2 = init_recording(parking_scenario.car, path_topdown, top_down=True)
+
+        if on_scenario_ready is not None:
+            on_scenario_ready(parking_scenario)
 
         world.tick()
         world.tick()
@@ -209,7 +231,7 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, weighted_i
 
         scenario_start_wall = time.time()
 
-        while not is_done(parking_scenario.car):
+        while not is_done(parking_scenario.car) and not is_done_geometry(parking_scenario.car):
 
             ### ----------- tick all the actors
 
@@ -259,12 +281,15 @@ def run_scenario(world, destination_parking_spot, parked_spots, ious, weighted_i
             if recording_path:
                 process_recording_frames(parking_scenario.car)
 
+            if on_step is not None:
+                on_step(parking_scenario)
+
             if parking_scenario.scenario_tree.status != py_trees.common.Status.RUNNING:
                 print(f"Parking Timeout: Scenario Failure")
                 break
 
-            if parking_scenario.timeout_node and parking_scenario.timeout_node.timeout or time.time() - scenario_start_wall > WALL_TIMEOUT:
-                print(f"Parking Timeout: 60s elapsed")
+            if time.time() - scenario_start_wall > WALL_TIMEOUT:
+                print(f"Parking Timeout: {WALL_TIMEOUT}s wall-clock elapsed")
                 break
 
             
@@ -347,7 +372,7 @@ def main():
                 recording_path = os.path.join(run_dir, f'scenario_{i+1}.mp4')
                 all_recording_paths.append(recording_path.replace('.mp4', '_chase.mp4'))
                 all_recording_paths.append(recording_path.replace('.mp4', '_topdown.mp4'))
-            run_scenario(world, destination_parking_spot, parked_spots, ious, weighted_ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path, car_list, scenario_mode)
+            run_scenario(world, destination_parking_spot, parked_spots, ious, weighted_ious, collisions_ref, near_misses_ref, actual_collisions, walker_collisions_ref, recording_path, car_list, scenario_mode, start_y_offset=0.0, start_x_offset=0.0)
             collisions.append(collisions_ref[0])
             walker_collisions.append(walker_collisions_ref[0])
             near_misses.append(near_misses_ref[0])

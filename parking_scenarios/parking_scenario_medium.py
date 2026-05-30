@@ -1,5 +1,6 @@
 
 from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest, ScenarioTimeoutTest
+from srunner.scenariomanager.timer import TimeOut
 from srunner.scenarios.background_activity import BackgroundBehavior
 from parking_scenarios.opposite_vehicle_parking import CollisionMode, OppositeDirectionVehicle
 from srunner.scenarios.basic_scenario import BasicScenario
@@ -46,7 +47,7 @@ import random
 
 class ParkingScenarioMedium(BasicScenario):
     category = "ParkingScenario"
-    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, mode = CollisionMode.STOP_EARLY):
+    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, mode = CollisionMode.STOP_EARLY, start_y_offset=0.0, start_x_offset=0.0):
 
         self.config = config
         self.world = world
@@ -64,12 +65,12 @@ class ParkingScenarioMedium(BasicScenario):
         self.criteria_enable = criteria_enable
         
         # load car
-        self.car = town04_spawn_ego_vehicle(world, destination)
+        self.car = town04_spawn_ego_vehicle(world, destination, start_y_offset=start_y_offset, start_x_offset=start_x_offset)
         CarlaDataProvider.register_actor(self.car.actor)  
         world.tick()
         
         
-        self.timeout = 75
+        self.timeout = 140
 
         # self.all_scenario_classes = None
         # self.ego_data = None
@@ -243,7 +244,10 @@ class ParkingScenarioMedium(BasicScenario):
     
     def _setup_scenario_end(self, config):
         return None
-    
+
+    def _create_timeout_behavior(self):
+        return TimeOut(self.timeout, name="TimeOut")
+
     ## From Route Scenario
     def cleanup(self):
         """

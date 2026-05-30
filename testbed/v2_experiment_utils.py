@@ -86,12 +86,20 @@ def town04_load(client):
 
     return world
 
-def town04_spawn_ego_vehicle(world, destination_parking_spot, car_class=None):
+def town04_spawn_ego_vehicle(world, destination_parking_spot, car_class=None, start_y_offset=0.0, start_x_offset=0.0):
     if car_class is None:
         car_class = CarlaCar
     destination_parking_spot_loc = parking_vehicle_locations_Town04[destination_parking_spot]
     blueprint = world.get_blueprint_library().filter(EGO_VEHICLE)[0]
-    return car_class(world, blueprint, player_location_Town04, destination_parking_spot_loc, approximate_bb_from_center(destination_parking_spot_loc), debug=DEBUG)
+    if start_y_offset != 0.0 or start_x_offset != 0.0:
+        base = player_location_Town04
+        spawn_transform = carla.Transform(
+            carla.Location(x=base.location.x + start_x_offset, y=base.location.y + start_y_offset, z=base.location.z),
+            base.rotation,
+        )
+    else:
+        spawn_transform = player_location_Town04
+    return car_class(world, blueprint, spawn_transform, destination_parking_spot_loc, approximate_bb_from_center(destination_parking_spot_loc), debug=DEBUG)
 
 def town04_spawn_parked_cars(world, spawn_points, skip, num_random_cars):
     blueprints = world.get_blueprint_library().filter('vehicle.*.*')
@@ -334,6 +342,10 @@ def _draw_bb(world, bbox, color, life_time):
         )
 
 def obstacle_map_from_bbs(bbs, existing_obs=None, min_y=None):
+    if not bbs and existing_obs is None:
+        dummy = np.zeros((4, 4), dtype=int)
+        dummy[0, :] = 1; dummy[-1, :] = 1; dummy[:, 0] = 1; dummy[:, -1] = 1
+        return ObstacleMap(0.0, 0.0, dummy)
     obs_min_x = float('inf')
     obs_max_x = float('-inf')
     obs_min_y = float('inf') if min_y is None else min_y
