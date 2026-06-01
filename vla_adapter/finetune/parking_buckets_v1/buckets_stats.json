@@ -26,5 +26,13 @@
   "recovery_park": {
     "count": 3759,
     "pct": 13.2
+  },
+  "correction_maneuver": {
+    "count": 2661,
+    "pct": 9.3
+  },
+  "pre_turn": {
+    "count": 3918,
+    "pct": 13.7
   }
 }

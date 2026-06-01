@@ -1,0 +1,258 @@
+diff --git a/data/augmented_templates/lmdrive.json b/data/augmented_templates/lmdrive.json
+index d6295c4..a4b99fc 100644
+--- a/data/augmented_templates/lmdrive.json
++++ b/data/augmented_templates/lmdrive.json
+@@ -535,4 +535,24 @@
+     "Please navigate towards the designated point, which is [x] meters in front of you and [y] meters to your left/right.",
+     "Please follow the direction towards the navigation point located [x] meters in front and [y] meters to your left/right.",
+     "Head towards the point, the next one's about [x] meters up front, [y] meters to your left/right.",
+-    "Navigate towards the designated point. The next point is located [x] meters ahead and [y] meters to your left/right."]}
+\ No newline at end of file
++    "Navigate towards the designated point. The next point is located [x] meters ahead and [y] meters to your left/right."],
++    "65": [
++    "Park in the target space.",
++    "Pull into the parking spot ahead.",
++    "Navigate to the parking space.",
++    "Park the vehicle at the target location.",
++    "Pull into the designated parking spot.",
++    "Park here.",
++    "Please park the vehicle.",
++    "Drive into the parking space and stop.",
++    "Maneuver into the parking spot.",
++    "Park the car in the indicated space.",
++    "The parking space is [x] meters ahead and [y] meters to your left. Please park there.",
++    "The parking space is [x] meters ahead and [y] meters to your right. Please park there.",
++    "Park in the spot [x] meters ahead and [y] meters to your left.",
++    "Park in the spot [x] meters ahead and [y] meters to your right.",
++    "Your parking target is [x] meters forward and [y] meters to your left.",
++    "Your parking target is [x] meters forward and [y] meters to your right."
++    ]
++
++}
+\ No newline at end of file
+diff --git a/simlingo_training/dataloader/dataset_base.py b/simlingo_training/dataloader/dataset_base.py
+index 4dc056c..86201cd 100644
+--- a/simlingo_training/dataloader/dataset_base.py
++++ b/simlingo_training/dataloader/dataset_base.py
+@@ -508,7 +508,8 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+                 3: 'go straight at the next intersection',
+                 4: 'follow the road',
+                 5: 'do a lane change to the left',
+-                6: 'do a lane change to the right',        
++                6: 'do a lane change to the right',
++                65: 'park in the target space',
+             }
+             command_template_mappings = {
+                 1: [0, 2, 4, 7],
+@@ -517,6 +518,7 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+                 4: [38, 40, 42, 43, 44, 45],
+                 5: [34, 36],
+                 6: [35, 37],
++                65: [65],
+             }
+             command = map_command[current_measurement["command"]]
+             next_command = map_command[current_measurement["next_command"]]
+@@ -524,17 +526,20 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+                 next_command = f' then {next_command}'
+             else:
+                 next_command = ''
+-            if current_measurement["command"] == 4:
++            if current_measurement["command"] in (4, 65):
+                 command_str = f'Command: {command}{next_command}.'
+             else:
+                 command_str = f'Command: {command} in {dist_to_command} meter{next_command}.'
+             target_options.append(command_str)
+-            
++
+             if self.use_lmdrive_commands:
+-                lmdrive_index = random.choice(command_template_mappings[current_measurement["command"]])
+-                lmdrive_command = random.choice(self.command_templates[str(lmdrive_index)])
+-                lmdrive_command = lmdrive_command.replace('[x]', str(dist_to_command))
+-                lm_command = f'Command: {lmdrive_command}.'
++                if current_measurement["command"] == 65 and "lmdrive_command" in current_measurement:
++                    lm_command = f'Command: {current_measurement["lmdrive_command"]}.'
++                else:
++                    lmdrive_index = random.choice(command_template_mappings[current_measurement["command"]])
++                    lmdrive_command = random.choice(self.command_templates[str(lmdrive_index)])
++                    lmdrive_command = lmdrive_command.replace('[x]', str(dist_to_command))
++                    lm_command = f'Command: {lmdrive_command}.'
+                 target_options.append(lm_command)
+         
+         return target_options, placeholder_values
+diff --git a/simlingo_training/models/driving.py b/simlingo_training/models/driving.py
+index e9f8bf4..26e9834 100644
+--- a/simlingo_training/models/driving.py
++++ b/simlingo_training/models/driving.py
+@@ -272,12 +272,21 @@ class DrivingModel(pl.LightningModule):
+ 
+ 
+     def validation_step(self, batch: DrivingExample, _batch_idx: int = 0):
+-        
++
+         output, loss_logs = self.forward_loss(batch)
+         logs = output #.update(loss_logs)
+-        self.log_training_output(logs, "val")
+ 
+-        # log the loss
++        # BEGIN EDIT (autovalet): log per-component val losses to wandb explicitly,
++        # since the original log_training_output call was not appearing in wandb.
++        losses = {k: n.detach() for k, n in output.loss_averages.items()}
++        counts = {k: n.detach().sum() for k, n in output.loss_counts.items()}
++        losses["loss"] = output.loss.detach()
++        counts["loss"] = 1
++        for k, v in sorted(losses.items()):
++            log_key = f"val_losses/{k}"
++            self.log(log_key, v, batch_size=counts[k], on_step=False, on_epoch=True, prog_bar=False, logger=True, sync_dist=True, add_dataloader_idx=False)
++        # END EDIT (autovalet)
++
+         self.log("val/loss", output.loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
+ 
+         return {"loss": output.loss, "outputs": output}
+diff --git a/team_code/agent_simlingo.py b/team_code/agent_simlingo.py
+index 4675d47..0494e96 100644
+--- a/team_code/agent_simlingo.py
++++ b/team_code/agent_simlingo.py
+@@ -685,6 +685,10 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
+         pred_speed_wps = pred_speed_wps.float() if pred_speed_wps is not None else None
+         pred_route = pred_route.float() if pred_route is not None else None
+ 
++        # ### CHANGE MADE BY SHAMAK
++        self.latest_pred_route = pred_route[0].detach().cpu().numpy() if pred_route is not None else None
++        # # print("Trajectory Route", self.latest_pred_route)
++
+         # prepare velocity input
+         gt_velocity = tick_data['speed']
+ 
+@@ -960,4 +964,4 @@ def residual_state_x(a, b):
+ def residual_measurement_h(a, b):
+     y = a - b
+     y[2] = t_u.normalize_angle(y[2])
+-    return y
++    return y
+\ No newline at end of file
+diff --git a/team_code/config.py b/team_code/config.py
+index c172dcc..d6dd3fe 100644
+--- a/team_code/config.py
++++ b/team_code/config.py
+@@ -855,4 +855,4 @@ class GlobalConfig:
+     print('Setting: ', setting)
+     self.data_roots = []
+     for td_path in self.root_dir:
+-      self.data_roots = self.data_roots + [os.path.join(td_path, name) for name in os.listdir(td_path)]
++      self.data_roots = self.data_roots + [os.path.join(td_path, name) for name in os.listdir(td_path)]
+\ No newline at end of file
+diff --git a/team_code/config_simlingo.py b/team_code/config_simlingo.py
+index 5b537d9..09828a2 100644
+--- a/team_code/config_simlingo.py
++++ b/team_code/config_simlingo.py
+@@ -6,7 +6,8 @@ class GlobalConfig:
+         # -----------------------------------------------------------------------------
+         self.eval_route_as = 'target_point' # "target_point" or "target_point_command" "command", -1 -> use from model config
+         # if target_point_command (trained on both we eval with targetpoint)
+-        self.use_cot = True
++        ## SWITCHED TO DRIVING MODE BY SHAMAK (MAY 1) 
++        self.use_cot = False
+ 
+         self.carla_frame_rate = 1.0 / 20.0  # CARLA frame rate in milliseconds
+         self.carla_fps = 20  # Simulator Frames per second
+diff --git a/team_code/lateral_controller.py b/team_code/lateral_controller.py
+index 0885fe0..1d58812 100644
+--- a/team_code/lateral_controller.py
++++ b/team_code/lateral_controller.py
+@@ -18,7 +18,10 @@ class LateralController:
+     """
+         Computes the steering angle based on the route, current speed, vehicle position, and heading.
+ 
+-        Args:
++        Aroute = [
++            (carla.Transform(loc), RoadOption.LANEFOLLOW),
++            (carla.Transform(dest), RoadOption.LANEFOLLOW),
++        ]rgs:
+             route_points (numpy.ndarray): Array of (x, y) coordinates representing the route.
+             current_speed (float): Current speed of the vehicle in m/s.
+             vehicle_position (numpy.ndarray): Array of (x, y) coordinates representing the vehicle's position.
+diff --git a/team_code/longitudinal_controller.py b/team_code/longitudinal_controller.py
+index 6043812..52e6b68 100644
+--- a/team_code/longitudinal_controller.py
++++ b/team_code/longitudinal_controller.py
+@@ -250,4 +250,4 @@ class LongitudinalLinearRegressionController(LongitudinalController):
+ 
+     throttle = np.clip(features @ params[:-1], 0., 1.)
+ 
+-    return throttle
++    return throttle
+\ No newline at end of file
+diff --git a/team_code/nav_planner.py b/team_code/nav_planner.py
+index 7967db5..eb20acf 100644
+--- a/team_code/nav_planner.py
++++ b/team_code/nav_planner.py
+@@ -95,18 +95,32 @@ class LateralPIDController(object):
+             n_lookahead = n_lookahead - 2
+             n_lookahead = int(min(n_lookahead, route_np.shape[0] - 1))  # range [2, 9] - but 0 and 1 are never used because n_lookahead is overwritten below
+         else:
+-            n_lookahead = int(min(np.clip(self.speed_scale * current_speed + self.speed_offset, 24, 105), route_np.shape[0] - 1))
+-
++            # SHAMAK: Changed clip minimum from hardcoded 24 (2.4m at 0.1m spacing)
++            # to self.default_lookahead so parking scenarios can set a larger value.
++            # The original 24 (2.4m) was tuned for dense A* routes; model-predicted
++            # routes have ~1.5m waypoint spacing so curvature only appears beyond ~6m
++            # — the car steers straight and misses the lateral turn into the spot.
++            # init_testbed sets default_lookahead=80 (8m) for parking compatibility.
++            n_lookahead = int(min(np.clip(self.speed_scale * current_speed + self.speed_offset, self.default_lookahead, 105), route_np.shape[0] - 1))
++
++        # # ##OVERRIDE lookahead, added by SHAMAK:
++        # add this back in order to eval the original checkpoint
++        n_lookahead = int(np.clip(10 + 4 * (current_speed), 20, 60))
++        
+         n_lookahead = min(n_lookahead, len(route_np)-1)
++
++                                                                                                      
++
+         desired_heading_vec = route_np[n_lookahead]
+ 
+         yaw_path = np.arctan2(desired_heading_vec[1], desired_heading_vec[0])
+         heading_error = (yaw_path) % (2*np.pi)
+         heading_error = heading_error if heading_error < np.pi else heading_error - 2*np.pi
+-        
++
+         # the scaling doesn't deserve any specific purpose but is a leftover from a previous less efficient implementation,
+         # on which we optimized the parameters
+-        heading_error = heading_error * 180. / np.pi / 90.
++        ## Tuned this to improve navigation in parking (make 25 to eval original checkpoint)
++        heading_error = heading_error * 180. / np.pi / 90. # 90. # 20
+ 
+         self._window.append(heading_error)
+         self._window = self._window[-self.n:]
+@@ -116,6 +130,12 @@ class LateralPIDController(object):
+ 
+         steering = np.clip(self.k_p * heading_error + self.k_d * derivative + self.k_i * integral, -1., 1.).item()
+ 
++        # DEBUG: print to diagnose turning issue
++        # print("[STEER DEBUG] lookahead=%d target=(%.2f,%.2f) yaw_path=%.1f° heading_err=%.3f steer=%.3f speed_kmh=%.1f route_len=%d" %
++        #       (n_lookahead, float(desired_heading_vec[0]), float(desired_heading_vec[1]),
++        #        float(np.degrees(yaw_path)), float(heading_error), float(steering),
++        #        float(current_speed), len(route_np)))
++
+         return steering
+ 
+     def save(self):
+diff --git a/team_code/simlingo_utils.py b/team_code/simlingo_utils.py
+index e822064..97a0719 100644
+--- a/team_code/simlingo_utils.py
++++ b/team_code/simlingo_utils.py
+@@ -88,4 +88,3 @@ def get_camera_extrinsics():
+     extrinsics = torch.tensor(extrinsics, dtype=torch.float32)
+ 
+     return extrinsics
+-
+diff --git a/team_code/transfuser_utils.py b/team_code/transfuser_utils.py
+index 3f0612d..5f43efc 100644
+--- a/team_code/transfuser_utils.py
++++ b/team_code/transfuser_utils.py
+@@ -820,4 +820,4 @@ def crop_array(config, images_i):  # images_i must have dimensions (H,W,C) or (H
+     else:  # for depth and semantics, there is no channel dimension
+       return images_i[0:config.cropped_height, side_crop_amount:images_i.shape[1] - side_crop_amount]
+   else:
+-    return images_i
++    return images_i
+\ No newline at end of file

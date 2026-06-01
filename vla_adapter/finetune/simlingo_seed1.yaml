@@ -28,7 +28,11 @@ data_module:
     approach: 0.10     # straight approach — still present but reduced
     swing_out: 0.35    # active lateral turn — critical, upsample ~3.5x
     final_turn: 0.35   # near-spot alignment — critical, upsample ~3.5x
+    into_spot: 0.40    # turned + straight pull-in (3-6m) — not covered by swing_out/final_turn, main failure case
+    # turn_execution removed: 47% of data, mostly straight-approach frames at 3-8m that taught the model to delay the turn
+    pre_turn: 0.35     # near-term straight but mid-term route shows turn starting (3-10m) — teaches when to initiate
     recovery_park: 0.15  # recovery episodes — upsample ~1.5x
+    correction_maneuver: 0.30  # reversing near spot (abs(tx)<8, route going backward) — correction/reposition frames
   base_dataset:
     data_path: ../finetune/run_001
     bucket_path: ../finetune/parking_buckets_v1

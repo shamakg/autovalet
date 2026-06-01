@@ -1,5 +1,6 @@
 from enum import Enum
 from srunner.scenariomanager.scenarioatomics.atomic_behaviors import UpdateAllActorControls
+from parking_scenarios.config import SCENARIO_TIMEOUT
 from srunner.scenariomanager.timer import TimeOut
 from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest
 from parking_scenarios.vehicle_opens_door_parking import VehicleOpensDoorTwoWaysParking
@@ -109,7 +110,7 @@ class ParkingScenarioHard(BasicScenario):
 
         self.build_scenarios(self.car.actor)
 
-        self.timeout = 140
+        self.timeout = SCENARIO_TIMEOUT
         super().__init__(
             config.name, [self.car.actor], config, world, debug_mode > 3, False, criteria_enable
         )

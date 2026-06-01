@@ -1,4 +1,5 @@
 
+from parking_scenarios.config import SCENARIO_TIMEOUT
 from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest, ScenarioTimeoutTest
 from srunner.scenariomanager.timer import TimeOut
 from srunner.scenarios.background_activity import BackgroundBehavior
@@ -70,7 +71,7 @@ class ParkingScenarioMedium(BasicScenario):
         world.tick()
         
         
-        self.timeout = 140
+        self.timeout = SCENARIO_TIMEOUT
 
         # self.all_scenario_classes = None
         # self.ego_data = None

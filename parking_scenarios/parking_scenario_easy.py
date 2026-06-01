@@ -1,4 +1,5 @@
 import importlib
+from parking_scenarios.config import SCENARIO_TIMEOUT
 from parking_scenarios.parking_cone import ParkingConeScenario
 from srunner.scenariomanager.scenarioatomics.atomic_behaviors import ScenarioTriggerer, UpdateAllActorControls
 from srunner.scenariomanager.timer import TimeOut
@@ -131,7 +132,7 @@ class ParkingScenarioEasy(BasicScenario):
 
         self.build_scenarios(self.car.actor)
 
-        self.timeout = 140
+        self.timeout = SCENARIO_TIMEOUT
         super().__init__(
             config.name, [self.car.actor], config, world, debug_mode > 3, False, criteria_enable
         )

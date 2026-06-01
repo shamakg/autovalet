@@ -66,6 +66,9 @@ TX_FAR_THRESH       = 8.0   # m — above this = far from spot
 TX_FINAL_THRESH     = 3.0   # m — below this = near spot
 TX_INTO_THRESH      = 6.0   # m — into-spot: turned and driving straight in
 TX_TURN_EXEC_THRESH = 8.0   # m — turn_execution: full 0-8m window (mid-turn + pre-turn)
+LAT_MID_TURN_THRESH = 1.0   # m — mid-term lateral deviation indicating turn is imminent
+MIDTERM_START = 5           # waypoint index where mid-term window begins
+MIDTERM_END   = 15          # waypoint index where mid-term window ends
 
 
 def classify(route: np.ndarray, target_x: float, ep_type: str) -> list[str]:
@@ -88,10 +91,23 @@ def classify(route: np.ndarray, target_x: float, ep_type: str) -> list[str]:
         # mid-turn execution (where curvature is high). Oversampling this teaches
         # the model to commit to the turn at the right distance.
         buckets.append("turn_execution")
+
+    lat_mid = float(np.max(np.abs(route[MIDTERM_START:MIDTERM_END, 1])))
+    if lat_near < LAT_STRAIGHT_THRESH and lat_mid > LAT_MID_TURN_THRESH and 3 < target_x < 10:
+        # Pre-turn anticipation: near-term path is still straight but the mid-term
+        # route already shows the turn beginning. These frames teach the model exactly
+        # when to initiate the turn — the critical "trigger" signal.
+        buckets.append("pre_turn")
     if ep_type in RECOVERY_TYPES:
         # Named 'recovery_park' (not 'recovery') so SimLingo's dataset loader uses
         # its generic bucket lookup instead of the hardcoded recovery_data_small/large case.
         buckets.append("recovery_park")
+
+    if abs(target_x) < 8.0 and route[1, 0] < 0:
+        # Reversing while near the spot: covers both overshoot corrections (tx < 0)
+        # and near-spot repositioning (0 < tx < 8). Not labeled explicitly in episode
+        # meta — identified purely from route direction and proximity.
+        buckets.append("correction_maneuver")
 
     return buckets
 
@@ -127,6 +143,7 @@ def main():
     buckets: dict[str, list[str]] = {
         "all": [], "approach": [], "swing_out": [], "final_turn": [],
         "into_spot": [], "turn_execution": [], "recovery_park": [],
+        "correction_maneuver": [], "pre_turn": [],
     }
 
     episodes = sorted(data_dir.glob("Town04_*"))

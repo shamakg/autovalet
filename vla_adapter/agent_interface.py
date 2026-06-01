@@ -59,7 +59,7 @@ class SimLingoAdapter(LingoAgent):
         # Default 1.0 lets the speed PID wind up and overshoot 2x desired speed
         # before brake_ratio can catch it. 0.5 gives a gentler ramp that stays
         # within ~10% of the desired speed target.
-        self.config.clip_throttle = 0.1
+        # self.config.clip_throttle = 0.5
 
         # Lateral PID lookahead: the default 24 index points (2.4m at 0.1m route
         # spacing after interpolate_waypoints) was designed for dense A* routes.
@@ -69,7 +69,17 @@ class SimLingoAdapter(LingoAgent):
         # 80 index points = 8m lookahead, where the model route shows clear curvature.
         # This uses the default_lookahead attribute which nav_planner.py now reads
         # (was previously hardcoded to 24 and ignored default_lookahead entirely).
-        self.turn_controller.default_lookahead = 35
+        self.turn_controller.default_lookahead = 45
+
+        # --- Pure pursuit parameters ---
+        self.pp_lookahead_min   = 3.5    # m — minimum lookahead distance
+        self.pp_lookahead_scale = 2.0    # lookahead = max(min, speed * scale)
+        self.pp_wheelbase       = 2.856  # m — Lincoln MKZ front-to-rear axle
+        self.pp_max_steer_deg   = 70.0   # degrees — normalises steer to [-1, 1]
+
+        # --- control_pid parameters ---
+        self.reverse_deadband   = 0.1    # m/s — sw delta below this triggers reverse mode
+        self.creep_stop_eps     = 0.02   # m/s — desired speed below this skips creep throttle floor
 
         self.save_path_metric = None
 
@@ -341,6 +351,32 @@ class SimLingoAdapter(LingoAgent):
         self._wp_log.write(json.dumps(record) + '\n')
         self._wp_log.flush()
 
+    def _pure_pursuit(self, route_wps, speed_ms):
+        L = max(self.pp_lookahead_min, speed_ms * self.pp_lookahead_scale)
+        # Interpolate to 0.1m arc-length spacing so the lookahead is measured
+        # along the actual curve, not straight-line distance from origin.
+
+        # Add the vehicle's position (origin)
+        pts = np.concatenate([[[0., 0.]], route_wps], axis=0)
+        ## compute the arc length to each waypoint
+        seg_lens = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        arc = np.concatenate([[0.], np.cumsum(seg_lens)])
+        ## if total path (arc[-1]) very small, return no steering
+        if arc[-1] < 0.01:
+            return 0.0
+        ## resample the path at every 0.1 m in case the waypoints aren't evenly spaced
+        new_arc = np.arange(0.1, arc[-1], 0.1)
+        fine = np.stack([np.interp(new_arc, arc, pts[:, 0]),
+                         np.interp(new_arc, arc, pts[:, 1])], axis=1)
+        ## Finds the first resampled point that is at least L meters along the road
+        beyond = np.where(new_arc >= L)[0]
+        target = fine[beyond[0]] if len(beyond) > 0 else fine[-1]
+        # The heading angle to the target point
+        alpha = np.arctan2(target[1], target[0])
+        ## We use Ackerman steering
+        steer = np.arctan2(2.0 * self.pp_wheelbase * np.sin(alpha), L)
+        return float(np.clip(steer / np.deg2rad(self.pp_max_steer_deg), -1.0, 1.0))
+
     def control_pid(self, route_waypoints, velocity, speed_waypoints):
         if isinstance(velocity, torch.Tensor):
             velocity = velocity.view(-1)
@@ -349,30 +385,37 @@ class SimLingoAdapter(LingoAgent):
         wps = route_waypoints[0].data.cpu().numpy()
         self._log_waypoints(wps, sw)
 
-        REVERSE_DEADBAND = 0.5  # meters
-        is_reverse = (sw[-1, 0] - sw[0, 0]) < -REVERSE_DEADBAND
-
+        # determine reverse intent vs noise (changing reverse deadband doesn't do much via ablation)
+        is_reverse = (sw[-1, 0] - sw[0, 0]) < -self.reverse_deadband
+        ### clear the integral PID when reversing so it doesn't blow up
         if is_reverse and not getattr(self, '_reverse_intent', False):
             self.speed_controller.window.clear()
         self._reverse_intent = is_reverse
-
+        # Estimates desired speed by measuring how far the plan moves between the 0.5s and 1.0s marks, 
+        # then doubling (since that's half a second of travel)
         one_second = int(self.config.carla_fps // (self.config.wp_dilation * self.config.data_save_freq))
         half_second = one_second // 2
         desired_speed = np.linalg.norm(sw[half_second - 2] - sw[one_second - 2]) * 2.0
-        CREEP_STOP_EPS = 0.02  # m/s
-
         def _creep(steer, throttle, brake):
-            if (not brake) and desired_speed > CREEP_STOP_EPS:
+            if (not brake) and desired_speed > self.creep_stop_eps:
                 throttle = max(float(throttle), self.config.creep_throttle)
             return steer, throttle, brake
 
         if not is_reverse:
-            return _creep(*super().control_pid(route_waypoints, velocity, speed_waypoints))
+            # old: return _creep(*super().control_pid(route_waypoints, velocity, speed_waypoints))
+            _, throttle, brake = super().control_pid(route_waypoints, velocity, speed_waypoints)
+            steer = self._pure_pursuit(wps, float(velocity[0]))
+            return _creep(steer, throttle, brake)
 
+        ## mirror the waypoints if we're reversing
         mirrored_route = route_waypoints.clone()
         mirrored_route[..., 0] = -mirrored_route[..., 0]
 
-        steer, throttle, brake = super().control_pid(mirrored_route, velocity.abs(), speed_waypoints)
+        # old: steer, throttle, brake = super().control_pid(mirrored_route, velocity.abs(), speed_waypoints)
+        _, throttle, brake = super().control_pid(mirrored_route, velocity.abs(), speed_waypoints)
+        mirrored_wps = wps.copy()
+        mirrored_wps[:, 0] = -mirrored_wps[:, 0]
+        steer = self._pure_pursuit(mirrored_wps, float(velocity.abs()[0]))
 
         # Explicit reverse brake: cut throttle once we're already going faster than
         # desired (by a 0.5 m/s margin). Clearer and better tuned for reverse than the
@@ -403,40 +446,43 @@ class SimLingoAdapter(LingoAgent):
 
     ## Privileged success tracker
     def is_done(self):
-        bb = self.hero_actor.bounding_box
+        actor = self.hero_actor
+        bb = actor.bounding_box
         dest = self._destination
         proxy = type('_', (), {
-            'actor': self.hero_actor,
+            'actor': actor,
             'destination_bb': [dest.x - bb.extent.x, dest.y - bb.extent.y, dest.x + bb.extent.x, dest.y + bb.extent.y],
             'debug': False,
         })()
         iou = CarlaCar.iou(proxy)
 
-        done = iou > 0.6
-        print(f"IOU={iou:.3f}")
-        return done
+        half_len = bb.extent.x
+        far_dest = TrajectoryPoint(
+            dest.direction,
+            dest.x + half_len * np.cos(dest.angle),
+            dest.y + half_len * np.sin(dest.angle),
+            dest.speed,
+            dest.angle,
+        )
+        loc = actor.get_location()
+        yaw = np.deg2rad(actor.get_transform().rotation.yaw)
+        front_x = loc.x + half_len * np.cos(yaw)
+        front_y = loc.y + half_len * np.sin(yaw)
+        dx = front_x - far_dest.x
+        dy = front_y - far_dest.y
+        along = dx * np.cos(self._dest_angle) + dy * np.sin(self._dest_angle)
 
-        # --- old along/across front-bumper logic  ---
-        # half_len = self.hero_actor.bounding_box.extent.x
-        # dest_raw = self._destination
-        # far_dest = TrajectoryPoint(
-        #     dest_raw.direction,
-        #     dest_raw.x + half_len * np.cos(dest_raw.angle),
-        #     dest_raw.y + half_len * np.sin(dest_raw.angle),
-        #     dest_raw.speed,
-        #     dest_raw.angle,
-        # )
-        # loc = self.hero_actor.get_location()
-        # yaw = np.deg2rad(self.hero_actor.get_transform().rotation.yaw)
-        # front_x = loc.x + half_len * np.cos(yaw)
-        # front_y = loc.y + half_len * np.sin(yaw)
-        # dx = front_x - far_dest.x
-        # dy = front_y - far_dest.y
-        # along = dx * np.cos(self._dest_angle) + dy * np.sin(self._dest_angle)
-        # across = abs(-dx * np.sin(self._dest_angle) + dy * np.cos(self._dest_angle))
-        # done = along > -0.5
-        # print(f"DEPTH TO FAR EDGE {along:.2f}m  ACROSS {across:.2f}m")
-        # return done
+        vel = actor.get_velocity()
+        speed = np.sqrt(vel.x**2 + vel.y**2)
+
+        self._peak_iou = max(getattr(self, '_peak_iou', 0.0), iou)
+
+        # success: good overlap, geometrically aligned, and car has settled
+        # speed check prevents early termination while still manoeuvring/correcting
+        done = (iou > 0.6) and (along > -0.5) and (speed < 0.3)
+        label = 'SUCCESS' if done else ''
+        print(f"IOU={iou:.3f} peak={self._peak_iou:.3f} along={along:.2f}m speed={speed:.2f}m/s  {label}")
+        return done
 
 
     def destroy_cam(self):
