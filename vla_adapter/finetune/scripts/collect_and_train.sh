@@ -33,11 +33,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # ── 1. clear old data ────────────────────────────────────────────────────────
-echo "[1/4] Removing old episode data..."
+echo "[1/6] Removing old episode data..."
 rm -rf "${DATA_DIR}"
 
 # ── 2. start CARLA ───────────────────────────────────────────────────────────
-echo "[2/4] Starting CARLA (port ${CARLA_PORT})..."
+echo "[2/6] Starting CARLA (port ${CARLA_PORT})..."
 /home/sumesh/opt/carla/CarlaUE4.sh -RenderOffScreen -carla-port=${CARLA_PORT} &
 CARLA_PID=$!
 echo "      CARLA PID: ${CARLA_PID}"
@@ -45,20 +45,33 @@ echo "      Waiting 20s for CARLA to be ready..."
 sleep 20
 
 # ── 3. collect data ──────────────────────────────────────────────────────────
-echo "[3/4] Collecting data..."
+echo "[3/6] Collecting data..."
 ${PYTHON} ${FINETUNE_DIR}/collect_data.py
 
 # ── 4. shut down CARLA (trap will also run on normal exit, this is explicit) ─
-echo "[4/4] CARLA will be shut down by cleanup trap."
+echo "[4/6] CARLA will be shut down by cleanup trap."
 CARLA_PID_SAVED=${CARLA_PID}
 CARLA_PID=""   # prevent double-kill from trap after we kill manually here
 kill ${CARLA_PID_SAVED} 2>/dev/null || true
 sleep 5
 pkill -f "CarlaUE4-Linux-Shipping" 2>/dev/null || true
 
-# ── 5. train ─────────────────────────────────────────────────────────────────
-echo "[5/5] Starting training..."
-bash ${FINETUNE_DIR}/train.sh
+# ── 5. rebuild sampling buckets from the freshly collected data ──────────────
+# buckets_paths.pkl is a hard-coded list of frame paths into run_001/data, which
+# we just deleted + recollected. It MUST be rebuilt (v1 -> v3) or training samples
+# stale/missing frames. Builder defaults already target run_001/data ->
+# parking_buckets_v1 -> parking_buckets_v3 (the path train.sh's config reads).
+echo "[5/6] Rebuilding parking buckets (v1 -> v3)..."
+${PYTHON} ${FINETUNE_DIR}/create_parking_buckets.py
+${PYTHON} ${FINETUNE_DIR}/create_parking_buckets_v3.py
+echo "      New bucket distribution (the 0.5 m/s crawl shifts frames into the"
+echo "      near-spot buckets — eyeball the 2:1 freeroll:ped ratios before the long train):"
+cat ${FINETUNE_DIR}/parking_buckets_v3/buckets_stats.json
+echo
+
+# ── 6. train ─────────────────────────────────────────────────────────────────
+echo "[6/6] Starting training..."
+bash ${FINETUNE_DIR}/scripts/train.sh
 
 echo "Done."
 

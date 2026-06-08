@@ -1,38 +1,38 @@
 {
   "all": {
-    "count": 28527,
+    "count": 64549,
     "pct": 100.0
   },
   "approach": {
-    "count": 10663,
-    "pct": 37.4
+    "count": 12651,
+    "pct": 19.6
   },
   "swing_out": {
-    "count": 7513,
-    "pct": 26.3
+    "count": 27209,
+    "pct": 42.2
   },
   "final_turn": {
-    "count": 7557,
-    "pct": 26.5
+    "count": 19096,
+    "pct": 29.6
   },
   "into_spot": {
-    "count": 4796,
-    "pct": 16.8
+    "count": 15453,
+    "pct": 23.9
   },
   "turn_execution": {
-    "count": 13505,
-    "pct": 47.3
+    "count": 47797,
+    "pct": 74.0
   },
   "recovery_park": {
-    "count": 3759,
-    "pct": 13.2
+    "count": 9792,
+    "pct": 15.2
   },
   "correction_maneuver": {
-    "count": 2661,
-    "pct": 9.3
+    "count": 4143,
+    "pct": 6.4
   },
   "pre_turn": {
-    "count": 3918,
-    "pct": 13.7
+    "count": 6649,
+    "pct": 10.3
   }
 }

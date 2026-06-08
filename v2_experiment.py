@@ -52,7 +52,7 @@ import imageio.v3 as iio
 #     (47, [46, 48]),
 # ]
 
-SCENARIOS = [
+TRAIN_SCENARIOS = [
     (16, [15, 17]),  # row2 col1
     (17, [16, 18]),  # row2 col2
     (18, [17, 19]),  # row2 col3

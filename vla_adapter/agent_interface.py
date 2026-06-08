@@ -59,27 +59,42 @@ class SimLingoAdapter(LingoAgent):
         # Default 1.0 lets the speed PID wind up and overshoot 2x desired speed
         # before brake_ratio can catch it. 0.5 gives a gentler ramp that stays
         # within ~10% of the desired speed target.
-        # self.config.clip_throttle = 0.5
+        self.config.clip_throttle = 0.5
 
-        # Lateral PID lookahead: the default 24 index points (2.4m at 0.1m route
-        # spacing after interpolate_waypoints) was designed for dense A* routes.
-        # Model-predicted routes have ~1.5m waypoint spacing, so rightward curvature
-        # toward the parking spot only appears beyond ~6m. At 2.4m the route looks
-        # essentially straight and the car misses the lateral turn.
-        # 80 index points = 8m lookahead, where the model route shows clear curvature.
-        # This uses the default_lookahead attribute which nav_planner.py now reads
-        # (was previously hardcoded to 24 and ignored default_lookahead entirely).
         self.turn_controller.default_lookahead = 45
 
         # --- Pure pursuit parameters ---
-        self.pp_lookahead_min   = 3.5    # m — minimum lookahead distance
-        self.pp_lookahead_scale = 2.0    # lookahead = max(min, speed * scale)
+        self.pp_lookahead_min   = 1.5    # m — minimum lookahead distance
+        self.pp_lookahead_scale = 1.0    # lookahead = max(min, speed * scale)
         self.pp_wheelbase       = 2.856  # m — Lincoln MKZ front-to-rear axle
         self.pp_max_steer_deg   = 70.0   # degrees — normalises steer to [-1, 1]
 
         # --- control_pid parameters ---
         self.reverse_deadband   = 0.1    # m/s — sw delta below this triggers reverse mode
         self.creep_stop_eps     = 0.02   # m/s — desired speed below this skips creep throttle floor
+
+        # --- faithful longitudinal tracking ---
+        # Brake once we are this far above the model's commanded speed. The base
+        # control_pid clips the speed error at 0.0 so it can only ever add
+        # throttle; we track the model's speed DOWN here instead of relying on
+        # bang-bang braking. Lower = stricter tracking, more brake chatter.
+        self.track_brake_margin = 0.3    # m/s
+        # Anticipate the model's planned deceleration: target the minimum
+        # 0.5 s-averaged speed over the near horizon instead of only the first
+        # 0.5 s of the plan. OFF by default so the working (pedestrian) scenario
+        # is unchanged — flip on to A/B the faster cone scenario.
+        self.anticipate_speed     = False
+        self.anticipate_horizon_s = 1.5  # s — how far ahead to look for the slow-down
+
+        # --- Test-time approach speed cap (A/B experiment) ---
+        # Hypothesis: the model under-fits the fast turn-in; the only thing that
+        # makes it succeed in current data is a pedestrian forcing a slow approach.
+        # Artificially capping speed inside the turn-in zone (close to the spot)
+        # should reproduce that success on non-pedestrian scenarios WITHOUT a
+        # retrain. Set approach_cap_enabled=False to get the baseline for A/B.
+        self.approach_cap_enabled = True
+        self.approach_cap_dist    = 10.0   # m — cap speed once within this dist of the spot
+        self.approach_cap_speed   = 0.5   # m/s — desired-speed ceiling in the turn-in zone
 
         self.save_path_metric = None
 
@@ -307,12 +322,29 @@ class SimLingoAdapter(LingoAgent):
         gps_pos = self._route_planner.convert_gps_to_carla(gps)
         waypoint_route = self._route_planner.run_step(np.append(gps_pos[:2], gps[2]))
 
+        # Capture what the MODEL is effectively told the target is (ego frame, via
+        # the route_planner + GPS/compass pipeline) vs. the training-time ground
+        # truth (raw destination through collect_data.py's exact convention). If
+        # these disagree, the model is being conditioned on the wrong target and
+        # the "drive straight past the spot" route is an input bug, not a model
+        # weakness. Defaults so _log_waypoints always has the fields.
+        self._latest_ego_tp_model = None
+        self._latest_target_world = None
+        # Training convention (collect_data.py:181): inverse_conversion_2d(spot, ego_xy, yaw)
+        ego_tp_truth = inverse_conversion_2d(
+            np.array([self._destination.x, self._destination.y]),
+            np.array([loc.x, loc.y]), yaw,
+        )
+        self._latest_ego_tp_truth = [float(ego_tp_truth[0]), float(ego_tp_truth[1])]
+
         if len(waypoint_route) > 1:
             target_point = waypoint_route[1][0]
             compass = preprocess_compass(input_data['imu'][1][-1])
             ego_tp = inverse_conversion_2d(target_point[:2], gps_pos[:2], compass)
+            self._latest_ego_tp_model = [float(ego_tp[0]), float(ego_tp[1])]
+            self._latest_target_world = [float(target_point[0]), float(target_point[1])]
             self.draw_planned_path(target_point, compass, ego_tp, rgb)
-            print(f"ego_target_point: {ego_tp}")
+            print(f"ego_target_point (model): {ego_tp}  (truth): {ego_tp_truth}")
             print(f"target world coords: {target_point[:2]}")
             print(f"Destination: {self._destination}")
 
@@ -324,7 +356,8 @@ class SimLingoAdapter(LingoAgent):
 
 
 
-    def _log_waypoints(self, wps, sw):
+    def _log_waypoints(self, wps, sw, steer=None, throttle=None, brake=None,
+                       desired_speed=None, velocity=None):
         if not (hasattr(self, '_wp_log') and self._wp_log):
             return
         actor = self.hero_actor
@@ -343,13 +376,51 @@ class SimLingoAdapter(LingoAgent):
                 float(dx * np.cos(-yaw) - dy * np.sin(-yaw)),
                 float(dx * np.sin(-yaw) + dy * np.cos(-yaw)),
             ],
+            # Target the model is actually conditioned on (via route_planner+GPS)
+            # vs. the training-convention ground truth. Disagreement => input bug.
+            'ego_tp_model': getattr(self, '_latest_ego_tp_model', None),
+            'ego_tp_truth': getattr(self, '_latest_ego_tp_truth', None),
+            'target_world':  getattr(self, '_latest_target_world', None),
+            # Approach speed-cap experiment: did the cap fire this frame, and the
+            # ego-frame distance to the spot it gated on.
+            'cap_active':    bool(getattr(self, '_last_cap_active', False)),
+            'dist_to_spot':  getattr(self, '_last_dist_to_spot', None),
             'along_to_dest':  float(dx * np.cos(self._dest_angle) + dy * np.sin(self._dest_angle)),
             'across_to_dest': float(-dx * np.sin(self._dest_angle) + dy * np.cos(self._dest_angle)),
             'route_wps': wps.tolist(),
             'speed_wps': sw.tolist(),
+            # Control signals — so we can see whether the actuator is actually
+            # honoring the model's commanded speed (desired_speed vs velocity)
+            # and whether the brake is firing.
+            'steer':         None if steer is None else float(steer),
+            'throttle':      None if throttle is None else float(throttle),
+            'brake':         None if brake is None else bool(brake),
+            'desired_speed': None if desired_speed is None else float(desired_speed),
+            'velocity':      None if velocity is None else float(velocity),
         }
         self._wp_log.write(json.dumps(record) + '\n')
         self._wp_log.flush()
+
+    def _model_target_speed(self, sw, base_desired):
+        """Speed target derived from the model's speed waypoints.
+
+        Default: returns base_desired (the first-0.5 s estimate the base
+        controller uses). With self.anticipate_speed set, returns the minimum
+        0.5 s-averaged speed over the near horizon so the model's planned
+        deceleration into a turn is applied at full rate instead of lagging the
+        4 Hz re-predict. Either way the number is 100% model-derived — no cap.
+        """
+        if not self.anticipate_speed:
+            return float(base_desired)
+        # spacing between speed waypoints, in seconds
+        dt = (self.config.wp_dilation * self.config.data_save_freq) / self.config.carla_fps
+        step_speed = np.linalg.norm(np.diff(sw, axis=0), axis=1) / dt   # per-step m/s
+        win = max(1, int(round(0.5 / dt)))                             # 0.5 s window
+        n = min(len(step_speed), win + int(round(self.anticipate_horizon_s / dt)))
+        if n < win:
+            return float(base_desired)
+        windows = [step_speed[i:i + win].mean() for i in range(0, n - win + 1)]
+        return float(min(base_desired, min(windows)))
 
     def _pure_pursuit(self, route_wps, speed_ms):
         L = max(self.pp_lookahead_min, speed_ms * self.pp_lookahead_scale)
@@ -383,29 +454,62 @@ class SimLingoAdapter(LingoAgent):
 
         sw = speed_waypoints[0].data.cpu().numpy()
         wps = route_waypoints[0].data.cpu().numpy()
-        self._log_waypoints(wps, sw)
 
         # determine reverse intent vs noise (changing reverse deadband doesn't do much via ablation)
         is_reverse = (sw[-1, 0] - sw[0, 0]) < -self.reverse_deadband
-        ### clear the integral PID when reversing so it doesn't blow up
-        if is_reverse and not getattr(self, '_reverse_intent', False):
+        ### clear the integral PID on any direction change so the forward (signed
+        ### error) and reverse (base clipped delta) regimes don't pollute each other
+        if is_reverse != getattr(self, '_reverse_intent', False):
             self.speed_controller.window.clear()
         self._reverse_intent = is_reverse
-        # Estimates desired speed by measuring how far the plan moves between the 0.5s and 1.0s marks, 
+        # Estimates desired speed by measuring how far the plan moves between the 0.5s and 1.0s marks,
         # then doubling (since that's half a second of travel)
         one_second = int(self.config.carla_fps // (self.config.wp_dilation * self.config.data_save_freq))
         half_second = one_second // 2
-        desired_speed = np.linalg.norm(sw[half_second - 2] - sw[one_second - 2]) * 2.0
-        def _creep(steer, throttle, brake):
-            if (not brake) and desired_speed > self.creep_stop_eps:
+        base_desired = np.linalg.norm(sw[half_second - 2] - sw[one_second - 2]) * 2.0
+        # Optionally anticipate the model's planned slow-down (no-op unless
+        # self.anticipate_speed is set). Still 100% model-derived.
+        desired_speed = self._model_target_speed(sw, base_desired)
+
+        # Test-time approach speed cap. ego_tp (spot in ego frame) was stashed by
+        # run_step_testbed before this call. When the spot is within the turn-in
+        # zone, ceiling the desired speed so the late/under-converging turn becomes
+        # executable. Purely a controller override — does not touch the model.
+        self._last_cap_active = False
+        ego_tp = getattr(self, '_latest_ego_tp_truth', None)
+        if self.approach_cap_enabled and ego_tp is not None:
+            self._last_dist_to_spot = float(np.hypot(ego_tp[0], ego_tp[1]))
+            if self._last_dist_to_spot < self.approach_cap_dist and desired_speed > self.approach_cap_speed:
+                desired_speed = self.approach_cap_speed
+                self._last_cap_active = True
+
+        def _creep(steer, throttle, brake, speed_now):
+            # Only floor the throttle while we still need to reach the model's
+            # target. Flooring once we're already at/above desired_speed is what
+            # made the car ride ~2x the commanded speed. At standstill
+            # (speed_now=0 < desired) the floor still kicks the car into motion.
+            if (not brake) and desired_speed > self.creep_stop_eps and speed_now < desired_speed:
                 throttle = max(float(throttle), self.config.creep_throttle)
             return steer, throttle, brake
 
         if not is_reverse:
-            # old: return _creep(*super().control_pid(route_waypoints, velocity, speed_waypoints))
-            _, throttle, brake = super().control_pid(route_waypoints, velocity, speed_waypoints)
-            steer = self._pure_pursuit(wps, float(velocity[0]))
-            return _creep(steer, throttle, brake)
+            speed_now = float(velocity[0])
+            # Signed speed error so the controller can follow the model's speed
+            # DOWN, not just up. The base control_pid clips the error at 0.0
+            # (agent_simlingo / transfuser_utils), so it can only add throttle and
+            # leaves over-speed to bang-bang braking. Feeding the signed error
+            # also lets the PID's integral window unwind itself (anti-windup).
+            error = desired_speed - speed_now
+            throttle = float(np.clip(self.speed_controller.step(error),
+                                     0.0, self.config.clip_throttle))
+            # Proportional brake whenever we are meaningfully above the target.
+            brake = speed_now > desired_speed + self.track_brake_margin
+            if brake:
+                throttle = 0.0
+            steer = self._pure_pursuit(wps, speed_now)
+            steer, throttle, brake = _creep(steer, throttle, brake, speed_now)
+            self._log_waypoints(wps, sw, steer, throttle, brake, desired_speed, speed_now)
+            return steer, throttle, brake
 
         ## mirror the waypoints if we're reversing
         mirrored_route = route_waypoints.clone()
@@ -425,7 +529,8 @@ class SimLingoAdapter(LingoAgent):
         if brake:
             throttle = 0.0
 
-        steer, throttle, brake = _creep(steer, throttle, brake)
+        steer, throttle, brake = _creep(steer, throttle, brake, speed_mag)
+        self._log_waypoints(wps, sw, steer, throttle, brake, desired_speed, speed_mag)
         print(f"[reverse] netfwd={sw[-1,0]-sw[0,0]:.3f} desired={desired_speed:.3f} spd={speed_mag:.3f} steer={steer:.3f} thr={throttle:.3f}")
         return steer, throttle, brake
 

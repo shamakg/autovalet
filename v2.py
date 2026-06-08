@@ -28,6 +28,14 @@ TRAJECTORY_EXTENSION = 5
 MAX_ACCELERATION = 1
 MAX_SPEED = kmph_to_mps(10)
 MIN_SPEED = kmph_to_mps(2)
+# Turn-in slowdown for data collection. The SimLingo model conditions its route
+# prediction on input speed (prompt: "Current speed: X m/s"); fast speed labels
+# near the spot make it predict wide, overshooting arcs. A 0.5 m/s test-time cap
+# within 10 m made non-pedestrian scenarios park, so we bake that crawl into the
+# expert here: the recorded speed LABELS near the destination become slow, and
+# the model learns to slow + snap to the spot on its own. Set DIST=0 to disable.
+APPROACH_SLOWDOWN_DIST  = 10.0  # m from destination where the crawl begins
+APPROACH_SLOWDOWN_SPEED = 0.5   # m/s crawl speed through the turn-in zone
 STAGNATION_HISTORY_LENGTH = 100
 STAGNATION_THRESHOLD = 0.1
 FAILURE_HISTORY_LENGTH = 200
@@ -256,6 +264,22 @@ def refine_trajectory(trajectory: List[TrajectoryPoint]):
         # backward pass
         for i in range(end - 2, start - 1, -1):
             d = trajectory[i-1].distance(trajectory[i])
+            trajectory[i].speed = min(trajectory[i].speed, sqrt(trajectory[i+1].speed**2 + 2 * MAX_ACCELERATION * d))
+
+    # Terminal turn-in slowdown: cap speed within APPROACH_SLOWDOWN_DIST of the
+    # destination (trajectory end) to the crawl speed, then re-smooth backwards so
+    # the approach decelerates into the crawl instead of braking abruptly at the
+    # zone boundary. Applied across the whole trajectory after per-segment refine.
+    if APPROACH_SLOWDOWN_DIST > 0 and len(trajectory) > 1:
+        n = len(trajectory)
+        dist_from_end = 0.0
+        for i in range(n - 2, -1, -1):
+            dist_from_end += trajectory[i].distance(trajectory[i+1])
+            if dist_from_end <= APPROACH_SLOWDOWN_DIST:
+                trajectory[i].speed = min(trajectory[i].speed, APPROACH_SLOWDOWN_SPEED)
+        trajectory[-1].speed = min(trajectory[-1].speed, APPROACH_SLOWDOWN_SPEED)
+        for i in range(n - 2, -1, -1):
+            d = trajectory[i].distance(trajectory[i+1])
             trajectory[i].speed = min(trajectory[i].speed, sqrt(trajectory[i+1].speed**2 + 2 * MAX_ACCELERATION * d))
 
 def plan_hybrid_a_star(cur: TrajectoryPoint, destination: TrajectoryPoint, obs: ObstacleMap) -> list[TrajectoryPoint]:

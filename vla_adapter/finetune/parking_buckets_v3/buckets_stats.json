@@ -1,0 +1,261 @@
+{
+  "all": {
+    "total": 64549,
+    "freeroll": 28440,
+    "ped": 29152,
+    "door": 6957,
+    "unk": 0
+  },
+  "all_door": {
+    "total": 6957,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 6957,
+    "unk": 0
+  },
+  "all_freeroll": {
+    "total": 28440,
+    "freeroll": 28440,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "all_ped": {
+    "total": 29152,
+    "freeroll": 0,
+    "ped": 29152,
+    "door": 0,
+    "unk": 0
+  },
+  "approach": {
+    "total": 12651,
+    "freeroll": 3677,
+    "ped": 7631,
+    "door": 1343,
+    "unk": 0
+  },
+  "approach_door": {
+    "total": 1343,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 1343,
+    "unk": 0
+  },
+  "approach_freeroll": {
+    "total": 3677,
+    "freeroll": 3677,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "approach_ped": {
+    "total": 7631,
+    "freeroll": 0,
+    "ped": 7631,
+    "door": 0,
+    "unk": 0
+  },
+  "correction_maneuver": {
+    "total": 4143,
+    "freeroll": 2770,
+    "ped": 1275,
+    "door": 98,
+    "unk": 0
+  },
+  "correction_maneuver_door": {
+    "total": 98,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 98,
+    "unk": 0
+  },
+  "correction_maneuver_freeroll": {
+    "total": 2770,
+    "freeroll": 2770,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "correction_maneuver_ped": {
+    "total": 1275,
+    "freeroll": 0,
+    "ped": 1275,
+    "door": 0,
+    "unk": 0
+  },
+  "final_turn": {
+    "total": 19096,
+    "freeroll": 10194,
+    "ped": 7110,
+    "door": 1792,
+    "unk": 0
+  },
+  "final_turn_door": {
+    "total": 1792,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 1792,
+    "unk": 0
+  },
+  "final_turn_freeroll": {
+    "total": 10194,
+    "freeroll": 10194,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "final_turn_ped": {
+    "total": 7110,
+    "freeroll": 0,
+    "ped": 7110,
+    "door": 0,
+    "unk": 0
+  },
+  "into_spot": {
+    "total": 15453,
+    "freeroll": 7430,
+    "ped": 6491,
+    "door": 1532,
+    "unk": 0
+  },
+  "into_spot_door": {
+    "total": 1532,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 1532,
+    "unk": 0
+  },
+  "into_spot_freeroll": {
+    "total": 7430,
+    "freeroll": 7430,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "into_spot_ped": {
+    "total": 6491,
+    "freeroll": 0,
+    "ped": 6491,
+    "door": 0,
+    "unk": 0
+  },
+  "pre_turn": {
+    "total": 6649,
+    "freeroll": 2808,
+    "ped": 3273,
+    "door": 568,
+    "unk": 0
+  },
+  "pre_turn_door": {
+    "total": 568,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 568,
+    "unk": 0
+  },
+  "pre_turn_freeroll": {
+    "total": 2808,
+    "freeroll": 2808,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "pre_turn_ped": {
+    "total": 3273,
+    "freeroll": 0,
+    "ped": 3273,
+    "door": 0,
+    "unk": 0
+  },
+  "recovery_park": {
+    "total": 9792,
+    "freeroll": 5297,
+    "ped": 4495,
+    "door": 0,
+    "unk": 0
+  },
+  "recovery_park_door": {
+    "total": 0,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "recovery_park_freeroll": {
+    "total": 5297,
+    "freeroll": 5297,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "recovery_park_ped": {
+    "total": 4495,
+    "freeroll": 0,
+    "ped": 4495,
+    "door": 0,
+    "unk": 0
+  },
+  "swing_out": {
+    "total": 27209,
+    "freeroll": 11957,
+    "ped": 11857,
+    "door": 3395,
+    "unk": 0
+  },
+  "swing_out_door": {
+    "total": 3395,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 3395,
+    "unk": 0
+  },
+  "swing_out_freeroll": {
+    "total": 11957,
+    "freeroll": 11957,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "swing_out_ped": {
+    "total": 11857,
+    "freeroll": 0,
+    "ped": 11857,
+    "door": 0,
+    "unk": 0
+  },
+  "turn_execution": {
+    "total": 47797,
+    "freeroll": 21675,
+    "ped": 20619,
+    "door": 5503,
+    "unk": 0
+  },
+  "turn_execution_door": {
+    "total": 5503,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 5503,
+    "unk": 0
+  },
+  "turn_execution_freeroll": {
+    "total": 21675,
+    "freeroll": 21675,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "turn_execution_ped": {
+    "total": 20619,
+    "freeroll": 0,
+    "ped": 20619,
+    "door": 0,
+    "unk": 0
+  },
+  "turn_execution_ped_moving": {
+    "total": 1426,
+    "freeroll": 0,
+    "ped": 1426,
+    "door": 0,
+    "unk": 0
+  }
+}
