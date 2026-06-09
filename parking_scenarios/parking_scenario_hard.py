@@ -1,6 +1,8 @@
 from enum import Enum
 from srunner.scenariomanager.scenarioatomics.atomic_behaviors import UpdateAllActorControls
-from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest, ScenarioTimeoutTest
+from parking_scenarios.config import SCENARIO_TIMEOUT
+from srunner.scenariomanager.timer import TimeOut
+from srunner.scenariomanager.scenarioatomics.atomic_criteria import CollisionTest
 from parking_scenarios.vehicle_opens_door_parking import VehicleOpensDoorTwoWaysParking
 from srunner.scenarios.basic_scenario import BasicScenario
 from srunner.scenarioconfigs.scenario_configuration import ActorConfigurationData, ScenarioConfiguration
@@ -11,7 +13,7 @@ from carla import Transform
 from parking_scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
 from parking_scenarios.smart_pedestrian_crossing_parking import SmartPedestrianCrossingParking
 
-from v2_experiment_utils import (
+from testbed.v2_experiment_utils import (
     town04_spawn_ego_vehicle,
     town04_spawn_parked_cars,
     town04_spawn_parked_cars_with_doors,
@@ -50,7 +52,7 @@ class HardMode(Enum):
 
 class ParkingScenarioHard(BasicScenario):
     category = "ParkingScenarioHard"
-    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, mode = HardMode.PedMode, car_class=None):
+    def __init__(self, world, config, destination, parked, debug_mode=0, criteria_enable=True, mode = HardMode.PedMode, car_class=None, start_y_offset=0.0, start_x_offset=0.0):
 
         self.config = config
         self.world = world
@@ -72,13 +74,12 @@ class ParkingScenarioHard(BasicScenario):
         
         
         # load car
-        self.car = town04_spawn_ego_vehicle(world, destination, car_class=car_class)
+        self.car = town04_spawn_ego_vehicle(world, destination, car_class=car_class, start_y_offset=start_y_offset, start_x_offset=start_x_offset)
 
         CarlaDataProvider.register_actor(self.car.actor)
 
         self.world.tick()
         
-        self.timeout = 70
 
         # self.all_scenario_classes = None
         # self.ego_data = None
@@ -105,9 +106,11 @@ class ParkingScenarioHard(BasicScenario):
             self.parked_cars, self.parked_cars_bbs, self.parked_cars_and_spots_bbs = town04_spawn_parked_cars_with_doors(world, parked, destination, NUM_RANDOM_CARS)
         else:
             self.parked_cars, self.parked_cars_bbs, self.parked_cars_and_spots_bbs = town04_spawn_parked_cars(world, parked, destination, NUM_RANDOM_CARS)
-        
+        world.tick()  # register freshly spawned parked cars before building scenarios
+
         self.build_scenarios(self.car.actor)
 
+        self.timeout = SCENARIO_TIMEOUT
         super().__init__(
             config.name, [self.car.actor], config, world, debug_mode > 3, False, criteria_enable
         )
@@ -189,9 +192,9 @@ class ParkingScenarioHard(BasicScenario):
         self.list_scenarios.append(door_scenario)
         
         # Debug: draw the door car location
-        self.world.debug.draw_point(
-            door_car.get_location(), size=0.5, color=carla.Color(255, 0, 0), life_time=10
-        )
+        # self.world.debug.draw_point(
+        #     door_car.get_location(), size=0.5, color=carla.Color(255, 0, 0), life_time=10
+        # )
     
         return door_scenario
     
@@ -274,11 +277,10 @@ class ParkingScenarioHard(BasicScenario):
 
     def _create_test_criteria(self):
         criteria = [
-                ScenarioTimeoutTest(self.ego_vehicles[0], self.config.name),
                 CollisionTest(self.ego_vehicles[0], other_actor_type="vehicle", name="VehicleCollisionTest"),
                 CollisionTest(self.ego_vehicles[0], other_actor_type="walker", name="PedestrianCollisionTest"),
                 CollisionTest(self.ego_vehicles[0], other_actor_type="prop", name="PropCollisionTest"),
-        ]        
+        ]
         for scenario in self.list_scenarios:
             if hasattr(scenario, "_create_test_criteria"):
                 sub_criteria = scenario.get_criteria()
@@ -293,7 +295,10 @@ class ParkingScenarioHard(BasicScenario):
     
     def _setup_scenario_end(self, config):
         return None
-    
+
+    def _create_timeout_behavior(self):
+        return TimeOut(self.timeout, name="TimeOut")
+
     ## From Route Scenario
     def cleanup(self):
         """

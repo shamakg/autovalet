@@ -1,7 +1,7 @@
 import carla
 from leaderboard.autovalet.v2 import CarlaCar
 from srunner.scenarioconfigs.scenario_configuration import ScenarioConfiguration
-from v2_experiment_utils import load_client
+from testbed.v2_experiment_utils import load_client
 import sys
 import os
 import time

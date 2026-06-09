@@ -1,0 +1,121 @@
+{
+  "all": {
+    "total": 28527,
+    "freeroll": 11809,
+    "ped": 13707,
+    "door": 3011,
+    "unk": 0
+  },
+  "approach": {
+    "total": 10663,
+    "freeroll": 3435,
+    "ped": 5552,
+    "door": 1676,
+    "unk": 0
+  },
+  "correction_maneuver": {
+    "total": 2661,
+    "freeroll": 1617,
+    "ped": 1009,
+    "door": 35,
+    "unk": 0
+  },
+  "final_turn": {
+    "total": 7557,
+    "freeroll": 4602,
+    "ped": 2514,
+    "door": 441,
+    "unk": 0
+  },
+  "into_spot": {
+    "total": 4796,
+    "freeroll": 2333,
+    "ped": 2011,
+    "door": 452,
+    "unk": 0
+  },
+  "parked": {
+    "total": 862,
+    "freeroll": 403,
+    "ped": 357,
+    "door": 102,
+    "unk": 0
+  },
+  "pre_turn": {
+    "total": 3918,
+    "freeroll": 1513,
+    "ped": 2021,
+    "door": 384,
+    "unk": 0
+  },
+  "pre_turn_door": {
+    "total": 384,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 384,
+    "unk": 0
+  },
+  "pre_turn_freeroll": {
+    "total": 1513,
+    "freeroll": 1513,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "pre_turn_ped": {
+    "total": 2021,
+    "freeroll": 0,
+    "ped": 2021,
+    "door": 0,
+    "unk": 0
+  },
+  "recovery_park": {
+    "total": 3759,
+    "freeroll": 1522,
+    "ped": 2237,
+    "door": 0,
+    "unk": 0
+  },
+  "swing_out": {
+    "total": 7513,
+    "freeroll": 2575,
+    "ped": 4290,
+    "door": 648,
+    "unk": 0
+  },
+  "swing_out_door": {
+    "total": 648,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 648,
+    "unk": 0
+  },
+  "swing_out_freeroll": {
+    "total": 2575,
+    "freeroll": 2575,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "swing_out_ped": {
+    "total": 4290,
+    "freeroll": 0,
+    "ped": 4290,
+    "door": 0,
+    "unk": 0
+  },
+  "turn_exec_freeroll": {
+    "total": 5370,
+    "freeroll": 5370,
+    "ped": 0,
+    "door": 0,
+    "unk": 0
+  },
+  "turn_execution": {
+    "total": 13505,
+    "freeroll": 5370,
+    "ped": 6909,
+    "door": 1226,
+    "unk": 0
+  }
+}

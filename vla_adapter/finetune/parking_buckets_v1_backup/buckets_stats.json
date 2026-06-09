@@ -1,0 +1,22 @@
+{
+  "all": {
+    "count": 28527,
+    "pct": 100.0
+  },
+  "approach": {
+    "count": 10663,
+    "pct": 37.4
+  },
+  "swing_out": {
+    "count": 7513,
+    "pct": 26.3
+  },
+  "final_turn": {
+    "count": 7557,
+    "pct": 26.5
+  },
+  "recovery_park": {
+    "count": 3759,
+    "pct": 13.2
+  }
+}

@@ -239,9 +239,10 @@ class PedestrianCrossingParking(BasicScenario):
                 continue
             
             walker.set_location(spawn_transform.location + carla.Location(z=-50))
-            walker = self._replace_walker(walker, spawn_transform)
+            lane_center_x = start_location[4] if len(start_location) > 4 else None
+            walker = self._replace_walker(walker, spawn_transform, lane_center_x)
 
-            
+
             self.other_actors.append(walker)
             walker_d = {'x':start_location[0].x, 'y':start_location[0].y, 'z':start_location[0].z, "yaw":start_location[1]} #hard coded yaw
 
@@ -279,7 +280,7 @@ class PedestrianCrossingParking(BasicScenario):
             return [ScenarioTimeoutTest(self.ego_vehicles[0], self.config.name)]
         return []
     
-    def _replace_walker(self, walker, spawn_transform):
+    def _replace_walker(self, walker, spawn_transform, probe_x=None):
         """As the adversary is probably, replace it with another one"""
         type_id = walker.type_id
         try:
@@ -287,11 +288,28 @@ class PedestrianCrossingParking(BasicScenario):
                 walker.destroy()
         except:
             pass
+        # Spawn at a safe initial z so the actor exists for BB query
         spawn_transform.location.z = 0.5
         walker = CarlaDataProvider.request_new_actor(type_id, spawn_transform)
         if not walker:
             raise ValueError("Couldn't spawn the walker substitute")
         walker.set_simulate_physics(False)
+
+        # Probe at the lane center x (open driving lane, no parked-car geometry overhead)
+        # rather than the spawn x (5 m deep into the parked-car area) which can hit car
+        # roofs and return an elevated z.
+        probe = carla.Location(
+            x=probe_x if probe_x is not None else spawn_transform.location.x,
+            y=spawn_transform.location.y,
+            z=10.0,
+        )
+        proj = CarlaDataProvider.get_world().ground_projection(probe, 20.0)
+        if proj:
+            bb_half_h = walker.bounding_box.extent.z
+            spawn_transform.location.z = proj.location.z + bb_half_h + 0.1
+        else:
+            spawn_transform.location.z = 1.2  # safe fallback
+
         walker.set_location(spawn_transform.location)
         return walker
     
@@ -322,8 +340,9 @@ class PedestrianCrossingParking(BasicScenario):
         direction_sign = 1 if dest_y > ego_y else -1
 
         for lane_wp in lane_waypoints:
-            if direction_sign * (lane_wp[1] - dest_y) > 5:  # past destination
-                continue
+            ## removing this filter to enable recovery data for VLA finetuning
+            # if direction_sign * (lane_wp[1] - dest_y) > 5:  # past destination
+            #     continue
             if direction_sign * (lane_wp[1] - ego_y) < 13:  # behind or too close to ego start
                 continue
 
@@ -344,6 +363,6 @@ class PedestrianCrossingParking(BasicScenario):
 
             location = carla.Location(x=start_x, y=start_y, z=0.5)
 
-            spawn_data.append((location, yaw, walker_speed, near_destination))
+            spawn_data.append((location, yaw, walker_speed, near_destination, lane_x))
 
         return spawn_data

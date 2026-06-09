@@ -1,0 +1,116 @@
+# @package _global_
+defaults:
+  - train_base
+  - /data_module: driving
+  - /model/vision_model: vlm
+  - /model/language_model: llm
+  - /data_module/base_dataset: dataset
+
+model:
+  lr: 3e-5
+  predict_route_as_wps: True
+  speed_wps_mode: 2d
+  language_model:
+    variant: 'OpenGVLab/InternVL2-1B'
+    lora: True
+    lora_alpha: 64
+    lora_r: 32 ## may need to decrease
+    lora_dropout: 0.1
+  vision_model:
+    variant: 'OpenGVLab/InternVL2-1B'
+
+data_module:
+  batch_size: 4 # unfortunately don't have access to the SLURM cluster ;(
+  num_workers: 4
+  # dreamer_dataset: null
+  train_partitions:
+    # v3: EVERY major bucket is split freeroll/ped/door (parking_buckets_v3).
+    # Within EACH maneuver the realized draws (Σ frames×weight) are 2 freeroll :
+    # 1 ped.  Because ped frame counts differ per maneuver, each ped weight is set
+    # individually: w_ped = w_freeroll × n_freeroll / (2 × n_ped).  The freeroll
+    # weights themselves still vary by maneuver (how much to emphasise that skill).
+    # The background 'all' bucket is ALSO split (all_freeroll/all_ped/all_door)
+    # and held at 2:1, so the GLOBAL mix is exactly 2:1 too:
+    # ≈ freeroll 65.6% / ped 32.9% / door 1.5%.
+    # Maneuver door_* buckets are still set to 0 (not sampled directly); door is
+    # carried by all_door (~1.5%).  Raise all_door if door-opening regresses.
+    # Sampler weight is per-frame, so a bucket's share of draws is weight × size.
+    # background diversity, split by type so the regularizer is also 2:1.
+    # 'all' itself is kept at a tiny weight only because validation + the sampler
+    # require the bucket to exist (a 0 weight crashes: sampler does len // weight).
+    all: 0.001                         # structural only — effectively not sampled
+    all_freeroll: 0.05                 # 11809 frames — background, same as old 'all'
+    all_ped: 0.0215                    # 13707 frames — background ped, set for 2:1
+    all_door: 0.05                     # 3011 frames  — keeps door ≈1.5% of draws
+    # approach — was 52% ped
+    approach_freeroll: 0.10            # 3435 frames — straight approach at speed
+    approach_ped: 0.031                # 5552 frames — ped weight set for 2:1 within approach
+    # swing_out — freeroll entry velocity / arc geometry differs from post-ped-stop
+    swing_out_freeroll: 0.35           # 2575 frames — cone+empty, approaching at speed
+    swing_out_ped: 0.105               # 4290 frames — 2:1 within swing_out (was 0.35)
+    # final_turn — near-spot alignment
+    final_turn_freeroll: 0.35          # 4602 frames
+    final_turn_ped: 0.320              # 2514 frames — 2:1 within final_turn
+    # into_spot — straight pull-in after turn
+    into_spot_freeroll: 0.40           # 2333 frames
+    into_spot_ped: 0.232               # 2011 frames — 2:1 within into_spot
+    # pre_turn — turn-initiation trigger; ped-stopped context biased it before
+    pre_turn_freeroll: 0.35            # 1513 frames — cone+empty, approaching at speed
+    pre_turn_ped: 0.131                # 2021 frames — 2:1 within pre_turn (was 0.35)
+    # turn_execution: freeroll + MOVING ped only (≈2:1 within this maneuver).
+    # turn_execution_ped is speed-split — only frames where the car is actually
+    # driving through the turn (>0.5 m/s) are kept; the stopped/waiting-for-ped
+    # frames at 0-8m (which looked like straight-approach and taught late turns)
+    # are excluded.  See create_parking_buckets_v3.py.
+    turn_execution_freeroll: 0.20      # 5370 frames — approaching-at-speed turn commitment
+    turn_execution_ped_moving: 0.125   # 4309 frames — moving ped turn-exec (≈33% of maneuver)
+    # recovery_park — was 60% ped
+    recovery_park_freeroll: 0.15       # 1522 frames
+    recovery_park_ped: 0.051           # 2237 frames — 2:1 within recovery_park
+    # correction_maneuver — reversing near spot
+    correction_maneuver_freeroll: 0.30 # 1617 frames
+    correction_maneuver_ped: 0.240     # 1009 frames — 2:1 within correction_maneuver
+    # Door buckets (approach_door, swing_out_door, …) intentionally omitted → 0.
+    # The old 'parked' bucket is also dropped (its in-place route patch is NOT
+    # applied to run_001: route == route_original for all frames).
+  base_dataset:
+    data_path: ../finetune/run_001
+    bucket_path: ../finetune/parking_buckets_v3
+    pred_len: 11
+    hist_len: 1
+    hist_len_commentary: 5
+    cut_bottom_quarter: True
+    skip_first_n_frames: 10
+    num_route_points: 20
+    use_1d_wps: False
+    use_commentary: False
+    use_qa: False
+    qa_augmentation: False
+    commentary_augmentation: True
+    img_augmentation: True
+    img_augmentation_prob: 0.5
+    img_shift_augmentation: True
+    img_shift_augmentation_prob: 0.5
+    route_as: target_point_command
+    use_lmdrive_commands: True
+    use_old_towns: True
+    use_only_old_towns: False
+    use_town13: True
+    use_safety_flag: True
+
+max_epochs: 15
+val_every_n_epochs: 2
+precision: 16-mixed
+
+debug: false
+gpus: 1 ### only 1 gpu right now ripp
+strategy: deepspeed_stage_2
+seed: 9876
+name: parking_ft_v2
+resume: false
+
+checkpoint: /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt
+
+hydra:
+  run:
+    dir: outputs/${wandb_name}_${name}

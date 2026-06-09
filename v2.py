@@ -28,6 +28,14 @@ TRAJECTORY_EXTENSION = 5
 MAX_ACCELERATION = 1
 MAX_SPEED = kmph_to_mps(10)
 MIN_SPEED = kmph_to_mps(2)
+# Turn-in slowdown for data collection. The SimLingo model conditions its route
+# prediction on input speed (prompt: "Current speed: X m/s"); fast speed labels
+# near the spot make it predict wide, overshooting arcs. A 0.5 m/s test-time cap
+# within 10 m made non-pedestrian scenarios park, so we bake that crawl into the
+# expert here: the recorded speed LABELS near the destination become slow, and
+# the model learns to slow + snap to the spot on its own. Set DIST=0 to disable.
+APPROACH_SLOWDOWN_DIST  = 10.0  # m from destination where the crawl begins
+APPROACH_SLOWDOWN_SPEED = 0.5   # m/s crawl speed through the turn-in zone
 STAGNATION_HISTORY_LENGTH = 100
 STAGNATION_THRESHOLD = 0.1
 FAILURE_HISTORY_LENGTH = 200
@@ -258,6 +266,22 @@ def refine_trajectory(trajectory: List[TrajectoryPoint]):
             d = trajectory[i-1].distance(trajectory[i])
             trajectory[i].speed = min(trajectory[i].speed, sqrt(trajectory[i+1].speed**2 + 2 * MAX_ACCELERATION * d))
 
+    # Terminal turn-in slowdown: cap speed within APPROACH_SLOWDOWN_DIST of the
+    # destination (trajectory end) to the crawl speed, then re-smooth backwards so
+    # the approach decelerates into the crawl instead of braking abruptly at the
+    # zone boundary. Applied across the whole trajectory after per-segment refine.
+    if APPROACH_SLOWDOWN_DIST > 0 and len(trajectory) > 1:
+        n = len(trajectory)
+        dist_from_end = 0.0
+        for i in range(n - 2, -1, -1):
+            dist_from_end += trajectory[i].distance(trajectory[i+1])
+            if dist_from_end <= APPROACH_SLOWDOWN_DIST:
+                trajectory[i].speed = min(trajectory[i].speed, APPROACH_SLOWDOWN_SPEED)
+        trajectory[-1].speed = min(trajectory[-1].speed, APPROACH_SLOWDOWN_SPEED)
+        for i in range(n - 2, -1, -1):
+            d = trajectory[i].distance(trajectory[i+1])
+            trajectory[i].speed = min(trajectory[i].speed, sqrt(trajectory[i+1].speed**2 + 2 * MAX_ACCELERATION * d))
+
 def plan_hybrid_a_star(cur: TrajectoryPoint, destination: TrajectoryPoint, obs: ObstacleMap) -> list[TrajectoryPoint]:
     start = np.array([cur.x - obs.min_x, cur.y - obs.min_y, cur.angle])
     end = np.array([destination.x - obs.min_x, destination.y - obs.min_y, destination.angle])
@@ -385,61 +409,7 @@ class CarlaCar():
             self.debug_step()
 
         return ret
-        
-    def init_recording(self, recording_path, width=480, height=320, fps=20, top_down=False):
-        world = self.world
-        actor = self.actor
-        cam_bp = world.get_blueprint_library().find('sensor.camera.rgb')
-        cam_bp.set_attribute('image_size_x', str(width))
-        cam_bp.set_attribute('image_size_y', str(height))
-        cam_bp.set_attribute('fov', str(90))
-        if top_down:
-            cam_transform = carla.Transform(
-                carla.Location(x=0, z=30),
-                carla.Rotation(pitch=-90)
-            )
-        else:
-            cam_transform = carla.Transform(
-                carla.Location(x=-10, z=5),
-                carla.Rotation(pitch=-20)
-            )
-        cam = world.spawn_actor(cam_bp, cam_transform, attach_to=actor, attachment_type=carla.AttachmentType.Rigid)
-        self.recording_writer = cv2.VideoWriter(
-            recording_path,
-            cv2.VideoWriter_fourcc(*'mp4v'),
-            fps,
-            (width, height)
-        )
-        self.recording_width = width
-        self.recording_height = height
-        self.recording_path = recording_path
-        cam.listen(lambda image: self.frames.put(image))
-        return cam
     
-    
-    def process_recording_frames(self):
-        while not self.frames.empty():
-            if self.has_recorded_segment and self.car.mode == Mode.PARKED:
-                return
-            image = self.frames.get()
-            self.has_recorded_segment = False
-            data = np.frombuffer(image.raw_data, dtype=np.uint8).reshape((image.height, image.width, 4))
-            data = data[:, :, :3].copy()  # RGBA -> BGR (CARLA gives BGRA)
-            self.recording_writer.write(data)
-            if self.car.mode == Mode.PARKED:
-                self.has_recorded_segment = True
-                for _ in range(15):
-                    self.recording_writer.write(data)
-
-    def finalize_recording(self):
-        if hasattr(self, 'recording_writer') and self.recording_writer:
-            self.recording_writer.release()
-            path = getattr(self, 'recording_path', None)
-            if path and os.path.exists(path):
-                tmp = path + '.tmp.mp4'
-                os.rename(path, tmp)
-                os.system(f'ffmpeg -y -i "{tmp}" -vcodec libx264 -crf 18 -acodec aac "{path}" -loglevel quiet')
-                os.remove(tmp)
     
     def debug_init(self, spawn_point, destination):
         self.world.debug.draw_string(spawn_point.location, 'start', draw_shadow=False, color=carla.Color(r=255, g=0, b=0), life_time=120.0, persistent_lines=True)
@@ -522,6 +492,10 @@ class Car():
         self.trajectory: List[TrajectoryPoint] = []
         self.ti = 0
         self.mode = Mode.DRIVING
+        # True while deliberately yielding to a dynamic obstacle. Saved labels
+        # collapse the route to the ego origin during these frames so the model
+        # learns to stop (control already brakes via Mode.STALLED).
+        self.waiting = False
         self.prev_obs_hash = None
         self.world = world
         
@@ -716,6 +690,7 @@ class Car():
                 else:
                     print("Dynamic obstacle on path, waiting...")
                     self.mode = Mode.STALLED
+                    self.waiting = True
             else:
                 new_trajectory = plan_hybrid_a_star(cur, destination, self.obs)
 
@@ -733,6 +708,7 @@ class Car():
                     trajectory = self.trajectory = new_trajectory
                     self.stagnation_history = []
                     self.mode = Mode.DRIVING
+                    self.waiting = False
                     self._last_collision_replan_time = self.time
                 else:
                     has_dynamic_blocker = len(self.obs.dyn_obs_clusters) > 0
@@ -750,6 +726,7 @@ class Car():
                         else:
                             print("Path blocked by dynamic obstacle, waiting...")
                             self.mode = Mode.STALLED
+                            self.waiting = True
                     else:
                         self.obs.obs[1:-1, 1:-1] = 0
                         self.ti = 0
@@ -766,10 +743,12 @@ class Car():
             else:
                 print("Waiting for Dynamic Crosser...")
                 self.mode = Mode.STALLED
+                self.waiting = True
         elif not has_collision:
             self.crossing_start_time = None
             if self.mode == Mode.STALLED and len(self.trajectory) > 0:
                 self.mode = Mode.DRIVING
+                self.waiting = False
                 
         # decay all obstacles except the edges
         # self.obs.obs[1:-1, 1:-1] *= 0.99

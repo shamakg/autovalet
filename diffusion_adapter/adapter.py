@@ -58,8 +58,8 @@ from v2 import TrajectoryPoint, Direction, MIN_SPEED, MAX_SPEED, plan_hybrid_a_s
 from utils.map_process import build_map_features, set_astar_path, LANE_NUM, ROUTE_LANE_NUM, get_dist
 
 
-GOAL_GUIDANCE_SCALE = 1.0
-PATH_GUIDANCE_SCALE = 10.0
+GOAL_GUIDANCE_SCALE = 1000.0
+PATH_GUIDANCE_SCALE = 2000.0
 
 
 class _CombinedGuidance:
@@ -212,9 +212,7 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
             std_x, std_y, std_heading = carla_transform_to_standard(
                 mean[0], mean[1], np.rad2deg(yaw)
             )
-            _, _, std_heading = carla_transform_to_standard(0, 0, np.rad2deg(cur.angle))
-            std_vx = cur.speed * np.cos(std_heading)
-            std_vy = cur.speed * np.sin(std_heading)
+            std_vx, std_vy = carla_velocity_to_standard(mean[2], mean[3])
 
             agent_states.append(AgentState(
                 actor_id = actor_id,
@@ -243,15 +241,12 @@ def _build_model_inputs(cur: 'TrajectoryPoint', obs) -> dict:
     print("Route lane 0 points (ego frame x,y):", route_lanes[0, :5, :2])
 
     dist_along = get_dist(anchor_ego_state)
-    std_vx, std_vy = carla_velocity_to_standard(cur.speed * np.cos(cur.angle), cur.speed * np.sin(cur.angle))
 
-    ### what is the distance along the A* path that has already been traveled
     ego_current_state = np.array([
-        # position in ego frame (this is always 0)
-        0., 0., 1., 0.,   # sin heading
-        std_vx, std_vy,      # v
-        0., 0.,      # ax, ay
-        0., 0.,      # steering angle, yaw rate
+        0., 0., 1., 0.,   # x, y, cos_h, sin_h — ego at origin, heading=0 in ego frame
+        cur.speed, 0.,    # vx, vy — forward speed; lateral is always 0 in ego frame
+        0., 0.,           # ax, ay
+        0., 0.,           # steering angle, yaw rate
     ], dtype=np.float32)
 
     data = {

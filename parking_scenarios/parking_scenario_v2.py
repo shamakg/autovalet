@@ -11,7 +11,7 @@ import py_trees
 
 from carla import Transform
 from srunner.scenarios.pedestrian_crossing_parking import PedestrianCrossingParking
-from v2_experiment_utils import (
+from testbed.v2_experiment_utils import (
     town04_spawn_ego_vehicle,
     town04_spawn_parked_cars,
 )

@@ -218,13 +218,7 @@ class SmartPedestrianCrossingParking(BasicScenario):
         for start_location in self.spawn_locations:
             spawn_transform = carla.Transform(start_location[0], carla.Rotation(yaw=start_location[1])) ## got from PedestrianCrossing init
             walker = CarlaDataProvider.request_new_actor('walker.*', spawn_transform)
-            if walker is None: 
-                for walker in self.other_actors:
-                    try:
-                        if walker and walker.is_alive:
-                            walker.destroy()
-                    except:
-                        pass
+            if walker is None:
                 print("Failed to spawn an adversary, skipping")
                 continue
             
@@ -275,11 +269,26 @@ class SmartPedestrianCrossingParking(BasicScenario):
                 walker.destroy()
         except:
             pass
-        spawn_transform.location.z = 0.5
+        spawn_transform.location.z = 1.0
         walker = CarlaDataProvider.request_new_actor(type_id, spawn_transform)
         if not walker:
             raise ValueError("Couldn't spawn the walker substitute")
         walker.set_simulate_physics(False)
+
+        # Place walker origin at terrain_z + BB half-height + clearance so feet
+        # land above the ground surface.  Old z=0.5 put feet at −0.43 m (underground).
+        probe = carla.Location(
+            x=spawn_transform.location.x,
+            y=spawn_transform.location.y,
+            z=10.0,
+        )
+        proj = CarlaDataProvider.get_world().ground_projection(probe, 20.0)
+        if proj:
+            bb_half_h = walker.bounding_box.extent.z
+            spawn_transform.location.z = proj.location.z + bb_half_h + 0.1
+        else:
+            spawn_transform.location.z = 1.2
+
         walker.set_location(spawn_transform.location)
         return walker
     
@@ -323,7 +332,7 @@ class SmartPedestrianCrossingParking(BasicScenario):
             start_y = lane_y + self.car_gap
             yaw = self.yaw if direction > 0 else 180 - self.yaw   # face across lane
 
-            location = carla.Location(x=start_x, y=start_y, z=0.5)
+            location = carla.Location(x=start_x, y=start_y, z=1.0)
 
             spawn_data.append((location, yaw, walker_speed))
 

@@ -1,0 +1,1123 @@
+import sys
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo')
+from team_code.agent_simlingo import LingoAgent
+from team_code.nav_planner import RoutePlanner, _get_latlon_ref, _location_to_gps
+from agents.navigation.local_planner import RoadOption
+
+import carla
+import numpy as np
+import os
+import pathlib
+import cv2
+import torch
+import json
+from v2 import CarlaGnssSensor, CarlaTimeSensor, CarlaCollisionSensor, TrajectoryPoint, Direction, refine_trajectory, CarlaCar
+from team_code.transfuser_utils import inverse_conversion_2d, preprocess_compass
+save_dir = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/results/save_trajectory"
+
+
+#### IMPORTANT: THIS must be run with the Lincoln blueprint
+class SimLingoAdapter(LingoAgent):
+    def init_testbed(self, checkpoint_path, world, actor, destination, angle, save_path='/tmp/simlingo'):
+        # Path to where visualizations and other debug output gets stored, from agent_simlingo.py
+        os.environ['SAVE_PATH'] = save_path + '/'
+        os.makedirs(save_path, exist_ok=True)
+        os.environ['HUGGINGFACE_HUB_CACHE'] = '/tmp/hf_cache/hub'
+        os.environ['TRANSFORMERS_CACHE'] = '/tmp/hf_cache/hub'
+        os.environ['HF_HOME'] = '/tmp/hf_cache'
+        # Remove offline mode - let it use cache naturally
+        os.environ.pop('TRANSFORMERS_OFFLINE', None)
+
+        # -------------------------------------------------------------
+
+        pathlib.Path.__add__ = lambda self, other: str(self) + other
+
+        ### HACK: Pathing
+        self.setup(checkpoint_path, route_index = 'testbed')
+        self.debug_save_path = self.save_path + '/debug_viz'
+        pathlib.Path(self.debug_save_path).mkdir(parents=True, exist_ok=True)
+        self.save_path_metric = self.debug_save_path + '/metric'
+        pathlib.Path(self.save_path_metric).mkdir(parents=True, exist_ok=True)
+
+        # ---------------------------------------------------------------
+
+        self.initialized = True
+        self.control = carla.VehicleControl(0.0, 0.0, 1.0)
+        self.latest_pred_route = None
+        self._reverse_intent = False
+
+        ### TUNING CONFIG CONSTANTS for parking compatibility
+
+        # brake_speed: unconditional brake when desired < threshold.
+        # 0.15 prevents the creep_throttle+brake_ratio oscillation at very low
+        # desired speeds (model predicts near-zero during initial warm-up). The
+        # default 0.4 is too aggressive and brakes during slow parking maneuvers;
+        # 0.15 lets slow creep phases through while still stopping firmly at dest.
+        self.config.brake_speed = 0.0
+
+        # clip_throttle: cap max throttle to prevent runaway acceleration.
+        # Default 1.0 lets the speed PID wind up and overshoot 2x desired speed
+        # before brake_ratio can catch it. 0.5 gives a gentler ramp that stays
+        # within ~10% of the desired speed target.
+        self.config.clip_throttle = 0.5
+
+        self.turn_controller.default_lookahead = 45
+
+        # --- Pure pursuit parameters ---
+        self.pp_lookahead_min   = 1.5    # m — minimum lookahead distance
+        self.pp_lookahead_scale = 1.0    # lookahead = max(min, speed * scale)
+        self.pp_wheelbase       = 2.856  # m — Lincoln MKZ front-to-rear axle
+        self.pp_max_steer_deg   = 70.0   # degrees — normalises steer to [-1, 1]
+
+        # --- control_pid parameters ---
+        self.reverse_deadband   = 0.1    # m/s — sw delta below this triggers reverse mode
+        self.creep_stop_eps     = 0.02   # m/s — desired speed below this skips creep throttle floor
+
+        # --- faithful longitudinal tracking ---
+        # Brake once we are this far above the model's commanded speed. The base
+        # control_pid clips the speed error at 0.0 so it can only ever add
+        # throttle; we track the model's speed DOWN here instead of relying on
+        # bang-bang braking. Lower = stricter tracking, more brake chatter.
+        self.track_brake_margin = 0.3    # m/s
+        # Anticipate the model's planned deceleration: target the minimum
+        # 0.5 s-averaged speed over the near horizon instead of only the first
+        # 0.5 s of the plan. OFF by default so the working (pedestrian) scenario
+        # is unchanged — flip on to A/B the faster cone scenario.
+        self.anticipate_speed     = False
+        self.anticipate_horizon_s = 1.5  # s — how far ahead to look for the slow-down
+
+        # --- Test-time approach speed cap (A/B experiment) ---
+        # Hypothesis: the model under-fits the fast turn-in; the only thing that
+        # makes it succeed in current data is a pedestrian forcing a slow approach.
+        # Artificially capping speed inside the turn-in zone (close to the spot)
+        # should reproduce that success on non-pedestrian scenarios WITHOUT a
+        # retrain. Set approach_cap_enabled=False to get the baseline for A/B.
+        self.approach_cap_enabled = True
+        self.approach_cap_dist    = 10.0   # m — cap speed once within this dist of the spot
+        self.approach_cap_speed   = 0.5   # m/s — desired-speed ceiling in the turn-in zone
+
+        self.save_path_metric = None
+
+        # ---------------------------------------------------------------
+
+        ### Prompting the car!!!
+        dest_angle = angle
+        # Setting custom_prompt to None makes agent_simlingo build the verbatim
+        # training-time prompt "Current speed: X m/s. Target waypoint: <TP><TP>. Predict the waypoints."
+        # Any natural-language suffix here is off-distribution vs. training and breaks the model.
+        self.custom_prompt = None
+        self.metric_info = {}
+        self.hero_actor = actor
+
+        # self._astar_ti = 0
+
+        # ---------------------------------------------------------------
+
+        # Blueprint Debug
+        pc = self.hero_actor.get_physics_control()
+        print("mass:", pc.mass)
+        for i, w in enumerate(pc.wheels):
+            print(f"wheels: {[(w.position.x, w.position.y) for w in pc.wheels]}")
+            print(i, "max_steer:", w.max_steer_angle, "friction:", w.tire_friction, "pos:", w.position)
+
+        # ---------------------------------------------------------------
+
+        loc = actor.get_location()
+        map = world.get_map()
+        # This ensures GPS conversion is 1:1 with your current map
+        lat_ref, lon_ref = _get_latlon_ref(map)
+        self._lat_ref = lat_ref
+        self._lon_ref = lon_ref
+
+        self.route_planner_min_distance = 0.5
+
+        self._route_planner = RoutePlanner(
+            self.route_planner_min_distance,
+            self.route_planner_max_distance,
+            self._lat_ref, self._lon_ref
+        )
+
+        loc = actor.get_location()
+
+        self._destination = destination
+        self._dest_angle = dest_angle
+
+        # ---------------------------------------------------------------
+
+        ### Building Route for our car
+        # Training data writes target_point == target_point_next == the parking destination
+        # (collect_data.py:168-169). Inference reads target_point from waypoint_route[1] and
+        # next_target_point from waypoint_route[2] (agent_simlingo.py:442-443). To match
+        # training, keep the route at exactly 2 entries [loc, dest] so RoutePlanner.run_step
+        # (nav_planner.py:248-250) returns both unchanged, agent_simlingo falls into the
+        # `elif len(waypoint_route) > 1` branch, and target_point = next_target_point = dest.
+        dest = carla.Location(x=destination.x, y=destination.y, z=loc.z)
+        route = [
+            (carla.Transform(loc), RoadOption.LANEFOLLOW),
+            (carla.Transform(dest), RoadOption.LANEFOLLOW),
+        ]
+        self._route_planner.set_route(route, gps=False)
+
+        # ---------------------------------------------------------------
+
+        cfg = self.config
+        self.world = world
+
+        # ---------------------------------------------------------------
+
+        ## building the camera
+        cam_bp = world.get_blueprint_library().find('sensor.camera.rgb')
+        cam_bp.set_attribute('image_size_x', str(cfg.camera_width_0))
+        cam_bp.set_attribute('image_size_y', str(cfg.camera_height_0))
+        cam_bp.set_attribute('fov', str(cfg.camera_fov_0))
+
+
+        # ---------------------------------------------------------------
+
+        self._cam = world.spawn_actor(
+            cam_bp,
+            carla.Transform(
+                carla.Location(*cfg.camera_pos_0),
+                carla.Rotation(
+                    roll=cfg.camera_rot_0[0],
+                    pitch = cfg.camera_rot_0[1],
+                    yaw = cfg.camera_rot_0[2]
+                )
+            ),
+            attach_to=actor,
+            attachment_type=carla.AttachmentType.Rigid
+        )
+        self.latest_frame = None
+
+        # ---------------------------------------------------------------
+
+        self._cam.listen(lambda img: setattr(self, 'latest_frame', img))
+        print(f"camera_pos_0: {cfg.camera_pos_0}")
+        print(f"camera_rot_0: {cfg.camera_rot_0}")
+        print(f"camera_fov_0: {cfg.camera_fov_0}")
+        print(f"camera_width_0: {cfg.camera_width_0}")
+        print(f"camera_height_0: {cfg.camera_height_0}")
+        self.draw_route_waypoints(world)
+        self._wrap_model_for_timing()
+
+        os.makedirs(save_dir, exist_ok=True)
+        self._wp_log = open(os.path.join(save_dir, 'waypoint_log.jsonl'), 'a')
+        self._wp_log.write(json.dumps({'event': 'scenario_start', 'dest': [float(destination.x), float(destination.y)]}) + '\n')
+        self._wp_log.flush()
+        print(f"[logging] waypoint log -> {save_dir}/waypoint_log.jsonl")
+
+        self.latest_astar_trajectory = None
+
+        # ---------------------------------------------------------------
+
+    def _wrap_model_for_timing(self, warmup_steps=10):
+        import time as wall_time
+        adapter = self
+        original_model = self.model
+        state = {'calls': 0, 'warmup': warmup_steps, 'tick': 0, 'cached': None}
+
+        class _TimedModel:
+            def __call__(self_, *args, **kwargs):
+                # Match training: run the expensive forward pass only every
+                # data_save_freq ticks (4 Hz at 20 FPS) and reuse the cached
+                # waypoints in between. control_pid still runs every tick so
+                # the PID controllers step at full 20 Hz.
+                state['tick'] += 1
+                if state['cached'] is not None and (state['tick'] % adapter.config.data_save_freq != 0):
+                    return state['cached']
+
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                t0 = wall_time.perf_counter()
+                result = original_model(*args, **kwargs)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                elapsed = (wall_time.perf_counter() - t0) * 1000.0
+
+                state['calls'] += 1
+                if state['calls'] > state['warmup']:
+                    adapter.last_inference_latency_ms = elapsed
+
+                state['cached'] = result
+                return result
+
+            def __getattr__(self_, name):
+                return getattr(original_model, name)
+
+        self.model = _TimedModel()
+        self.last_inference_latency_ms = 0.0
+
+    def run_step(self, input_data, timestamp, sensors=None):
+        import time as wall_time
+
+        # Temporarily wrap self.model to capture pred_speed_wps, which simlingo
+        # consumes internally but does not store as an attribute.
+        _original_model = self.model
+        _captured = {}
+
+        class _CapturingModel:
+            def __call__(self_, *args, **kwargs):
+                out = _original_model(*args, **kwargs)
+                speed_wps, _, _ = out
+                if speed_wps is not None:
+                    _captured['speed_wps'] = speed_wps[0].float().detach().cpu().numpy()
+                return out
+            def __getattr__(self_, name):
+                return getattr(_original_model, name)
+
+        self.model = _CapturingModel()
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        start_time = wall_time.perf_counter()
+
+        result = super().run_step(input_data, timestamp, sensors)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self.model = _original_model
+        self.latest_pred_speed_wps = _captured.get('speed_wps')
+        self.last_pipeline_latency_ms = (wall_time.perf_counter() - start_time) * 1000.0
+        return result
+
+    def run_step_testbed(self, timestamp):
+        if self.latest_frame is None:
+            print("No frame yet")
+            return carla.VehicleControl(brake=1.0)
+
+        print("STEP:", self.step)
+
+        actor = self.hero_actor
+        loc = actor.get_location()
+
+        transform = actor.get_transform()
+        yaw = np.deg2rad(transform.rotation.yaw)
+        pitch = np.deg2rad(transform.rotation.pitch)
+        orientation = np.array([np.cos(pitch) * np.cos(yaw), np.cos(pitch) * np.sin(yaw), np.sin(pitch)])
+
+        vel = actor.get_velocity()
+        vel_np = np.array([vel.x, vel.y, vel.z])
+        speed = np.dot(vel_np, orientation)
+
+        gps_dict = _location_to_gps(self._lat_ref, self._lon_ref, loc)
+        gps = np.array([gps_dict['lat'], gps_dict['lon'], gps_dict['z']])
+
+        data = np.frombuffer(self.latest_frame.raw_data, dtype=np.uint8)
+        rgb = data.reshape((self.latest_frame.height, self.latest_frame.width, 4))[:, :, :3]
+
+        acc = actor.get_acceleration()
+        ang_vel = actor.get_angular_velocity()
+
+        input_data = {
+            'rgb_0': (None, rgb),
+            'speed': (None, {'speed': speed}),
+            'gps':   (None, gps),
+            'imu': (None, np.array([
+                acc.x, acc.y, acc.z,
+                ang_vel.x, ang_vel.y, ang_vel.z,
+                yaw + np.deg2rad(90.0)
+            ])),
+        }
+
+        gps_pos = self._route_planner.convert_gps_to_carla(gps)
+        waypoint_route = self._route_planner.run_step(np.append(gps_pos[:2], gps[2]))
+
+        # Capture what the MODEL is effectively told the target is (ego frame, via
+        # the route_planner + GPS/compass pipeline) vs. the training-time ground
+        # truth (raw destination through collect_data.py's exact convention). If
+        # these disagree, the model is being conditioned on the wrong target and
+        # the "drive straight past the spot" route is an input bug, not a model
+        # weakness. Defaults so _log_waypoints always has the fields.
+        self._latest_ego_tp_model = None
+        self._latest_target_world = None
+        # Training convention (collect_data.py:181): inverse_conversion_2d(spot, ego_xy, yaw)
+        ego_tp_truth = inverse_conversion_2d(
+            np.array([self._destination.x, self._destination.y]),
+            np.array([loc.x, loc.y]), yaw,
+        )
+        self._latest_ego_tp_truth = [float(ego_tp_truth[0]), float(ego_tp_truth[1])]
+
+        if len(waypoint_route) > 1:
+            target_point = waypoint_route[1][0]
+            compass = preprocess_compass(input_data['imu'][1][-1])
+            ego_tp = inverse_conversion_2d(target_point[:2], gps_pos[:2], compass)
+            self._latest_ego_tp_model = [float(ego_tp[0]), float(ego_tp[1])]
+            self._latest_target_world = [float(target_point[0]), float(target_point[1])]
+            self.draw_planned_path(target_point, compass, ego_tp, rgb)
+            print(f"ego_target_point (model): {ego_tp}  (truth): {ego_tp_truth}")
+            print(f"target world coords: {target_point[:2]}")
+            print(f"Destination: {self._destination}")
+
+        result = self.run_step(input_data, timestamp)
+        if getattr(self, '_reverse_intent', False):
+            result.reverse = True
+        return result
+
+
+
+
+    def _log_waypoints(self, wps, sw, steer=None, throttle=None, brake=None,
+                       desired_speed=None, velocity=None):
+        if not (hasattr(self, '_wp_log') and self._wp_log):
+            return
+        actor = self.hero_actor
+        loc = actor.get_location()
+        yaw = np.deg2rad(actor.get_transform().rotation.yaw)
+        dest = self._destination
+        dx = dest.x - loc.x
+        dy = dest.y - loc.y
+        record = {
+            'step': getattr(self, 'step', 0),
+            'pos_world': [float(loc.x), float(loc.y)],
+            'dest_world': [float(dest.x), float(dest.y)],
+            'yaw_deg': float(np.rad2deg(yaw)),
+            'dist_to_dest': float(np.hypot(dx, dy)),
+            'ego_dest': [
+                float(dx * np.cos(-yaw) - dy * np.sin(-yaw)),
+                float(dx * np.sin(-yaw) + dy * np.cos(-yaw)),
+            ],
+            # Target the model is actually conditioned on (via route_planner+GPS)
+            # vs. the training-convention ground truth. Disagreement => input bug.
+            'ego_tp_model': getattr(self, '_latest_ego_tp_model', None),
+            'ego_tp_truth': getattr(self, '_latest_ego_tp_truth', None),
+            'target_world':  getattr(self, '_latest_target_world', None),
+            # Approach speed-cap experiment: did the cap fire this frame, and the
+            # ego-frame distance to the spot it gated on.
+            'cap_active':    bool(getattr(self, '_last_cap_active', False)),
+            'dist_to_spot':  getattr(self, '_last_dist_to_spot', None),
+            'along_to_dest':  float(dx * np.cos(self._dest_angle) + dy * np.sin(self._dest_angle)),
+            'across_to_dest': float(-dx * np.sin(self._dest_angle) + dy * np.cos(self._dest_angle)),
+            'route_wps': wps.tolist(),
+            'speed_wps': sw.tolist(),
+            # Control signals — so we can see whether the actuator is actually
+            # honoring the model's commanded speed (desired_speed vs velocity)
+            # and whether the brake is firing.
+            'steer':         None if steer is None else float(steer),
+            'throttle':      None if throttle is None else float(throttle),
+            'brake':         None if brake is None else bool(brake),
+            'desired_speed': None if desired_speed is None else float(desired_speed),
+            'velocity':      None if velocity is None else float(velocity),
+        }
+        self._wp_log.write(json.dumps(record) + '\n')
+        self._wp_log.flush()
+
+    def _model_target_speed(self, sw, base_desired):
+        """Speed target derived from the model's speed waypoints.
+
+        Default: returns base_desired (the first-0.5 s estimate the base
+        controller uses). With self.anticipate_speed set, returns the minimum
+        0.5 s-averaged speed over the near horizon so the model's planned
+        deceleration into a turn is applied at full rate instead of lagging the
+        4 Hz re-predict. Either way the number is 100% model-derived — no cap.
+        """
+        if not self.anticipate_speed:
+            return float(base_desired)
+        # spacing between speed waypoints, in seconds
+        dt = (self.config.wp_dilation * self.config.data_save_freq) / self.config.carla_fps
+        step_speed = np.linalg.norm(np.diff(sw, axis=0), axis=1) / dt   # per-step m/s
+        win = max(1, int(round(0.5 / dt)))                             # 0.5 s window
+        n = min(len(step_speed), win + int(round(self.anticipate_horizon_s / dt)))
+        if n < win:
+            return float(base_desired)
+        windows = [step_speed[i:i + win].mean() for i in range(0, n - win + 1)]
+        return float(min(base_desired, min(windows)))
+
+    def _pure_pursuit(self, route_wps, speed_ms):
+        L = max(self.pp_lookahead_min, speed_ms * self.pp_lookahead_scale)
+        # Interpolate to 0.1m arc-length spacing so the lookahead is measured
+        # along the actual curve, not straight-line distance from origin.
+
+        # Add the vehicle's position (origin)
+        pts = np.concatenate([[[0., 0.]], route_wps], axis=0)
+        ## compute the arc length to each waypoint
+        seg_lens = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        arc = np.concatenate([[0.], np.cumsum(seg_lens)])
+        ## if total path (arc[-1]) very small, return no steering
+        if arc[-1] < 0.01:
+            return 0.0
+        ## resample the path at every 0.1 m in case the waypoints aren't evenly spaced
+        new_arc = np.arange(0.1, arc[-1], 0.1)
+        fine = np.stack([np.interp(new_arc, arc, pts[:, 0]),
+                         np.interp(new_arc, arc, pts[:, 1])], axis=1)
+        ## Finds the first resampled point that is at least L meters along the road
+        beyond = np.where(new_arc >= L)[0]
+        target = fine[beyond[0]] if len(beyond) > 0 else fine[-1]
+        # The heading angle to the target point
+        alpha = np.arctan2(target[1], target[0])
+        ## We use Ackerman steering
+        steer = np.arctan2(2.0 * self.pp_wheelbase * np.sin(alpha), L)
+        return float(np.clip(steer / np.deg2rad(self.pp_max_steer_deg), -1.0, 1.0))
+
+    def control_pid(self, route_waypoints, velocity, speed_waypoints):
+        if isinstance(velocity, torch.Tensor):
+            velocity = velocity.view(-1)
+
+        sw = speed_waypoints[0].data.cpu().numpy()
+        wps = route_waypoints[0].data.cpu().numpy()
+
+        # determine reverse intent vs noise (changing reverse deadband doesn't do much via ablation)
+        is_reverse = (sw[-1, 0] - sw[0, 0]) < -self.reverse_deadband
+        ### clear the integral PID on any direction change so the forward (signed
+        ### error) and reverse (base clipped delta) regimes don't pollute each other
+        if is_reverse != getattr(self, '_reverse_intent', False):
+            self.speed_controller.window.clear()
+        self._reverse_intent = is_reverse
+        # Estimates desired speed by measuring how far the plan moves between the 0.5s and 1.0s marks,
+        # then doubling (since that's half a second of travel)
+        one_second = int(self.config.carla_fps // (self.config.wp_dilation * self.config.data_save_freq))
+        half_second = one_second // 2
+        base_desired = np.linalg.norm(sw[half_second - 2] - sw[one_second - 2]) * 2.0
+        # Optionally anticipate the model's planned slow-down (no-op unless
+        # self.anticipate_speed is set). Still 100% model-derived.
+        desired_speed = self._model_target_speed(sw, base_desired)
+
+        # Test-time approach speed cap. ego_tp (spot in ego frame) was stashed by
+        # run_step_testbed before this call. When the spot is within the turn-in
+        # zone, ceiling the desired speed so the late/under-converging turn becomes
+        # executable. Purely a controller override — does not touch the model.
+        self._last_cap_active = False
+        ego_tp = getattr(self, '_latest_ego_tp_truth', None)
+        if self.approach_cap_enabled and ego_tp is not None:
+            self._last_dist_to_spot = float(np.hypot(ego_tp[0], ego_tp[1]))
+            if self._last_dist_to_spot < self.approach_cap_dist and desired_speed > self.approach_cap_speed:
+                desired_speed = self.approach_cap_speed
+                self._last_cap_active = True
+
+        def _creep(steer, throttle, brake, speed_now):
+            # Only floor the throttle while we still need to reach the model's
+            # target. Flooring once we're already at/above desired_speed is what
+            # made the car ride ~2x the commanded speed. At standstill
+            # (speed_now=0 < desired) the floor still kicks the car into motion.
+            if (not brake) and desired_speed > self.creep_stop_eps and speed_now < desired_speed:
+                throttle = max(float(throttle), self.config.creep_throttle)
+            return steer, throttle, brake
+
+        if not is_reverse:
+            speed_now = float(velocity[0])
+            # Signed speed error so the controller can follow the model's speed
+            # DOWN, not just up. The base control_pid clips the error at 0.0
+            # (agent_simlingo / transfuser_utils), so it can only add throttle and
+            # leaves over-speed to bang-bang braking. Feeding the signed error
+            # also lets the PID's integral window unwind itself (anti-windup).
+            error = desired_speed - speed_now
+            throttle = float(np.clip(self.speed_controller.step(error),
+                                     0.0, self.config.clip_throttle))
+            # Proportional brake whenever we are meaningfully above the target.
+            brake = speed_now > desired_speed + self.track_brake_margin
+            if brake:
+                throttle = 0.0
+            steer = self._pure_pursuit(wps, speed_now)
+            steer, throttle, brake = _creep(steer, throttle, brake, speed_now)
+            self._log_waypoints(wps, sw, steer, throttle, brake, desired_speed, speed_now)
+            return steer, throttle, brake
+
+        ## mirror the waypoints if we're reversing
+        mirrored_route = route_waypoints.clone()
+        mirrored_route[..., 0] = -mirrored_route[..., 0]
+
+        # old: steer, throttle, brake = super().control_pid(mirrored_route, velocity.abs(), speed_waypoints)
+        _, throttle, brake = super().control_pid(mirrored_route, velocity.abs(), speed_waypoints)
+        mirrored_wps = wps.copy()
+        mirrored_wps[:, 0] = -mirrored_wps[:, 0]
+        steer = self._pure_pursuit(mirrored_wps, float(velocity.abs()[0]))
+
+        # Explicit reverse brake: cut throttle once we're already going faster than
+        # desired (by a 0.5 m/s margin). Clearer and better tuned for reverse than the
+        # base brake_ratio math. Set before _creep so the creep floor respects it.
+        speed_mag = float(velocity.abs()[0])
+        brake = speed_mag > desired_speed + 0.5
+        if brake:
+            throttle = 0.0
+
+        steer, throttle, brake = _creep(steer, throttle, brake, speed_mag)
+        self._log_waypoints(wps, sw, steer, throttle, brake, desired_speed, speed_mag)
+        print(f"[reverse] netfwd={sw[-1,0]-sw[0,0]:.3f} desired={desired_speed:.3f} spd={speed_mag:.3f} steer={steer:.3f} thr={throttle:.3f}")
+        return steer, throttle, brake
+
+
+    # HACK
+    def get_metric_info(self):
+        actor = self._cam.parent
+        def v2l(v, rot=False):
+            return [v.roll, v.pitch, v.yaw] if rot else [v.x, v.y, v.z]
+        return {
+            'acceleration': v2l(actor.get_acceleration()),
+            'angular_velocity': v2l(actor.get_angular_velocity()),
+            'forward_vector': v2l(actor.get_transform().get_forward_vector()),
+            'right_vector': v2l(actor.get_transform().get_right_vector()),
+            'location': v2l(actor.get_transform().location),
+            'rotation': v2l(actor.get_transform().rotation, rot=True),
+        }
+
+    ## Privileged success tracker
+    def is_done(self):
+        actor = self.hero_actor
+        bb = actor.bounding_box
+        dest = self._destination
+        proxy = type('_', (), {
+            'actor': actor,
+            'destination_bb': [dest.x - bb.extent.x, dest.y - bb.extent.y, dest.x + bb.extent.x, dest.y + bb.extent.y],
+            'debug': False,
+        })()
+        iou = CarlaCar.iou(proxy)
+
+        half_len = bb.extent.x
+        far_dest = TrajectoryPoint(
+            dest.direction,
+            dest.x + half_len * np.cos(dest.angle),
+            dest.y + half_len * np.sin(dest.angle),
+            dest.speed,
+            dest.angle,
+        )
+        loc = actor.get_location()
+        yaw = np.deg2rad(actor.get_transform().rotation.yaw)
+        front_x = loc.x + half_len * np.cos(yaw)
+        front_y = loc.y + half_len * np.sin(yaw)
+        dx = front_x - far_dest.x
+        dy = front_y - far_dest.y
+        along = dx * np.cos(self._dest_angle) + dy * np.sin(self._dest_angle)
+
+        vel = actor.get_velocity()
+        speed = np.sqrt(vel.x**2 + vel.y**2)
+
+        self._peak_iou = max(getattr(self, '_peak_iou', 0.0), iou)
+
+        # success: good overlap, geometrically aligned, and car has settled
+        # speed check prevents early termination while still manoeuvring/correcting
+        done = (iou > 0.6) and (along > -0.5) and (speed < 0.3)
+        label = 'SUCCESS' if done else ''
+        print(f"IOU={iou:.3f} peak={self._peak_iou:.3f} along={along:.2f}m speed={speed:.2f}m/s  {label}")
+        return done
+
+
+    def destroy_cam(self):
+        if hasattr(self, '_cam') and self._cam.is_alive:
+            self._cam.destroy()
+        if hasattr(self, '_wp_log') and self._wp_log:
+            self._wp_log.close()
+            self._wp_log = None
+
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------------------------------------
+
+
+### DEBUGS
+
+    # ------------------------------------------------------------------
+    # DEBUG: bypass the model and feed a static ground-truth trajectory
+    # into control_pid so we can isolate the nav_planner PID behavior.
+    # ------------------------------------------------------------------
+    def init_debug_trajectory(self, shape='sine'):
+        """Build a static world-frame ground-truth trajectory once.
+
+        Uses v2.py's TrajectoryPoint / refine_trajectory so the format
+        matches what plan_hybrid_a_star produces.
+        """
+        actor = self.hero_actor
+
+        yaw0 = np.deg2rad(actor.get_transform().rotation.yaw)
+        cos_y, sin_y = np.cos(yaw0), np.sin(yaw0)
+
+        loc = actor.get_location()
+
+        N, ds = 150, 0.1  # 15 m of path
+        traj = []
+        for i in range(N):
+            s = i * ds
+            if shape == 'sine':
+                amp, wl = 1.5, 6.0
+                lon = s
+                lat = amp * np.sin(2 * np.pi * s / wl)
+                dlat = amp * (2 * np.pi / wl) * np.cos(2 * np.pi * s / wl)
+                local_yaw = np.arctan2(dlat, 1.0)
+                wx = loc.x + lon * cos_y - lat * sin_y
+                wy = loc.y + lon * sin_y + lat * cos_y
+                traj.append(TrajectoryPoint(Direction.FORWARD, wx, wy, 2.0, yaw0 + local_yaw))
+            elif shape == 'arc':
+                R = 6.0
+
+                # straight section: 5m forward
+                for i in range(50):
+                    s = i * 0.1
+                    lon = s
+                    lat = 0.0
+                    wx = loc.x + lon * cos_y - lat * sin_y
+                    wy = loc.y + lon * sin_y + lat * cos_y
+                    traj.append(TrajectoryPoint(Direction.FORWARD, wx, wy, 2.0, yaw0))
+
+                # right turn: arc in lon/lat space
+                # a right turn means lat goes negative (right = -lat in this convention)
+                for i in range(1, 50):
+                    theta = i * (np.pi/2) / 49  # 0 to pi/2
+                    lon = 5.0 + R * np.sin(theta)
+                    lat = -R * (1 - np.cos(theta))  # negative = right
+                    local_yaw = -theta  # turning right = negative yaw change
+                    wx = loc.x + lon * cos_y - lat * sin_y
+                    wy = loc.y + lon * sin_y + lat * cos_y
+                    traj.append(TrajectoryPoint(Direction.FORWARD, wx, wy, 1.0, yaw0 + local_yaw))
+        refine_trajectory(traj)
+        self._debug_trajectory = traj
+        self._debug_ti = 0
+
+        world = actor.get_world()
+        for i in range(len(traj) - 1):
+            a, b = traj[i], traj[i + 1]
+            world.debug.draw_line(
+                carla.Location(x=a.x, y=a.y, z=loc.z + 0.5),
+                carla.Location(x=b.x, y=b.y, z=loc.z + 0.5),
+                thickness=0.05,
+                color=carla.Color(r=255, g=0, b=255),
+                life_time=0.0,
+            )
+        print(f"[debug] ground-truth trajectory built: shape={shape}, N={len(traj)}")
+
+
+
+    def run_step_testbed_debug(self, timestamp):
+        """PID-only debug step: follow the static trajectory, skip the model."""
+        if self.latest_frame is None:
+            return carla.VehicleControl(brake=1.0)
+        if not hasattr(self, '_debug_trajectory'):
+            self.init_debug_trajectory('sine')
+
+        self.step += 1
+
+        actor = self._cam.parent
+        loc = actor.get_location()
+        yaw = np.deg2rad(actor.get_transform().rotation.yaw)
+        vel = actor.get_velocity()
+        fwd = actor.get_transform().get_forward_vector()
+        speed_mps = vel.x * fwd.x + vel.y * fwd.y + vel.z * fwd.z
+
+        # advance ti while the next waypoint is closer than the current one
+        traj = self._debug_trajectory
+        ti = self._debug_ti
+        while ti + 1 < len(traj):
+            dc = (traj[ti].x - loc.x) ** 2 + (traj[ti].y - loc.y) ** 2
+            dn = (traj[ti + 1].x - loc.x) ** 2 + (traj[ti + 1].y - loc.y) ** 2
+            if dn < dc:
+                ti += 1
+            else:
+                break
+        self._debug_ti = ti
+
+        # slice next N points ahead, pad with last if near the end
+        N = 30
+        chunk = traj[ti:ti + N]
+        if len(chunk) < N:
+            chunk = list(chunk) + [traj[-1]] * (N - len(chunk))
+
+        # world -> ego (same transform used in the real pipeline)
+        compass = preprocess_compass(yaw + np.deg2rad(90.0))
+        cur_xy = np.array([loc.x, loc.y], dtype=np.float32)
+        ego_pts = np.stack([
+            inverse_conversion_2d(np.array([p.x, p.y], dtype=np.float32), cur_xy, compass)
+            for p in chunk
+        ]).astype(np.float32)
+        pred_route = torch.from_numpy(ego_pts[np.newaxis])
+
+        # fake speed waypoints: straight forward, 0.25 s spacing
+        # desired_speed = norm(wp[0] - wp[2]) * 2 = DESIRED (see control_pid)
+        DESIRED = 0.75
+        dt = 0.25
+        speed_wps = np.array(
+            [[DESIRED * dt * (i + 1), 0.0] for i in range(N)], dtype=np.float32
+        )
+        pred_speed_wps = torch.from_numpy(speed_wps[np.newaxis])
+
+        gt_velocity = torch.FloatTensor([[float(speed_mps)]])
+
+        steer, throttle, brake = self.control_pid(pred_route, gt_velocity, pred_speed_wps)
+
+        if self.step < self.config.inital_frames_delay:
+            control = carla.VehicleControl(0.0, 0.0, 1.0)
+        else:
+            control = carla.VehicleControl(
+                steer=float(steer), throttle=float(throttle), brake=float(brake)
+            )
+        self.control = control
+
+        print(
+            f"[debug] step={self.step} ti={ti}/{len(traj)} v={float(speed_mps):.2f} "
+            f"steer={float(steer):.3f} thr={float(throttle):.3f} brk={int(bool(brake))} "
+            f"ego0=({float(ego_pts[0,0]):.2f},{float(ego_pts[0,1]):.2f})"
+        )
+        return control
+
+    def run_step_testbed_replay(self, timestamp):
+        self.step += 1
+        path = f'{save_dir}/pred_route_{self.step:04d}.npy'
+        if not os.path.exists(path):
+            print(f"No more saved routes at step {self.step}, stopping")
+            return carla.VehicleControl(brake=1.0)
+
+        route = np.load(f'{save_dir}/pred_route_{self.step:04d}.npy')
+        pred_route = torch.from_numpy(route[np.newaxis]).float()
+
+        # use real vehicle state
+        actor = self.hero_actor
+        vel = actor.get_velocity()
+        fwd = actor.get_transform().get_forward_vector()
+        speed_mps = vel.x * fwd.x + vel.y * fwd.y
+        gt_velocity = torch.FloatTensor([[speed_mps]])
+
+        # dummy speed waypoints
+        speed_wps = np.zeros((20, 2), dtype=np.float32)
+        pred_speed_wps = torch.from_numpy(speed_wps[np.newaxis])
+
+        steer, throttle, brake = self.control_pid(pred_route, gt_velocity, pred_speed_wps)
+        self.control = carla.VehicleControl(steer=float(steer), throttle=float(throttle), brake=float(brake))
+        return self.control
+
+    def draw_route_waypoints(self, world, duration=10.0):
+        return
+        debug = world.debug
+        route = self._route_planner.route
+        n = len(route)
+        if n == 0:
+            return
+
+        for i, (wp, _) in enumerate(route):
+            x, y, z = wp[0], wp[1], wp[2]
+            t = i / max(n - 1, 1)  # 0.0 at start, 1.0 at end
+
+            # gradient: green -> yellow -> red
+            r = int(255 * min(2 * t, 1.0))
+            g = int(255 * min(2 * (1 - t), 1.0))
+            grad = carla.Color(r=r, g=g, b=0)
+
+            if i == 0:
+                # start: large white dot + label
+                debug.draw_point(carla.Location(x=x, y=y, z=z + 0.6), size=0.2,
+                                 color=carla.Color(255, 255, 255), life_time=duration)
+                debug.draw_string(carla.Location(x=x, y=y, z=z + 1.2), "START",
+                                  draw_shadow=True, color=carla.Color(255, 255, 255), life_time=duration)
+            elif i == n - 1:
+                # end: large magenta dot + label
+                debug.draw_point(carla.Location(x=x, y=y, z=z + 0.6), size=0.2,
+                                 color=carla.Color(255, 0, 255), life_time=duration)
+                debug.draw_string(carla.Location(x=x, y=y, z=z + 1.2), "DEST",
+                                  draw_shadow=True, color=carla.Color(255, 0, 255), life_time=duration)
+            else:
+                debug.draw_point(carla.Location(x=x, y=y, z=z + 0.5), size=0.08,
+                                 color=grad, life_time=duration)
+
+            if i < n - 1:
+                nx, ny, nz = route[i + 1][0]
+                debug.draw_arrow(
+                    carla.Location(x=x, y=y, z=z + 0.5),
+                    carla.Location(x=nx, y=ny, z=nz + 0.5),
+                    thickness=0.04, arrow_size=0.15,
+                    color=grad, life_time=duration
+                )
+
+    def draw_planned_path(self, target_point, compass, ego_tp, rgb):
+
+        # project ego_tp onto image
+        # ego frame: x=forward, y=left
+        # camera intrinsics from config
+        cfg = self.config
+        fx = cfg.camera_width_0 / (2.0 * np.tan(np.deg2rad(cfg.camera_fov_0 / 2)))
+        cx = cfg.camera_width_0 / 2
+        cy = cfg.camera_height_0 / 2
+
+        # ego_tp is (forward, left) — convert to camera frame (x right, y down, z forward)
+        cam_x = -ego_tp[1]  # left → right
+        cam_y = 2.0        # camera height offset
+        cam_z = ego_tp[0]   # forward
+
+        rgb_save = rgb[:, :, ::-1].copy()
+
+        if cam_z > 0:
+            px = int(fx * cam_x / cam_z + cx)
+            py = int(fx * cam_y / cam_z + cy)
+            if 0 <= px < cfg.camera_width_0 and 0 <= py < cfg.camera_height_0:
+                cv2.circle(rgb_save, (px, py), 5, (0, 165, 255), -1)  # orange dot
+
+
+
+        # cv2.imwrite(f'{save_dir}/frame_{self.step:04d}.jpg', rgb_save)
+
+        def pure_pursuit(self, route_np, speed_ms, wheelbase = 2.856):  # using Lincoln wheelbase
+            L = max(1.0, 0.5 * speed_ms)
+            dists = np.linalg.norm(route_np, axis=1)
+            beyond = np.where(dists >= L)[0]
+
+            target = route_np[beyond[0]] if len(beyond) > 0 else route_np[-1]
+            alpha = np.arctan2(target[1], target[0])
+
+            steer = np.arctan2(2 * wheelbase * np.sin(alpha), L)
+            steer = np.clip(steer / np.deg2rad(70), -1.0, 1.0)
+
+            return float(steer)
+
+        def control_pid_pp(self, route_waypoints, velocity, speed_waypoints):
+            route_wps = route_waypoints[0].data.cpu().numpy()
+            speed_ms = float(velocity[0].data.cpu().numpy())
+
+            steer = self.pure_pursuit(route_wps, speed_ms)
+            steer = round(np.clip(steer, -1.0, 1.0), 3)
+
+            _, throttle, brake = super().control_pid(route_waypoints, velocity, speed_waypoints)
+            # throttle = min(throttle, 0.3)
+
+            max_lateral = np.max(np.abs(route_wps[:, 1]))  # check ALL waypoints not just first 10
+            MAX_SPEED = 1.5  # hard cap
+            if speed_ms > MAX_SPEED:
+                throttle = 0.0
+                brake = True
+            elif max_lateral > 2.0 and speed_ms > 1.0:  # significant turn coming
+                throttle = 0.0
+                brake = True
+
+            print(f"steer: {steer:.3f}, speed: {speed_ms:.2f}, max_lat: {max_lateral:.2f}")
+            return steer, throttle, brake
+
+    def control_pid_astar(self, route_waypoints, velocity, speed_waypoints):
+        if hasattr(self, '_astar_trajectory') and self._astar_trajectory:
+            loc = self.hero_actor.get_location()
+            yaw = np.deg2rad(self.hero_actor.get_transform().rotation.yaw)
+            traj = self._astar_trajectory
+
+            # advance ti
+            ti = getattr(self, '_astar_ti', 0)
+            min_dist = float('inf')
+            for i in range(ti, min(ti + 10, len(traj))):
+                d = (traj[i].x - loc.x)**2 + (traj[i].y - loc.y)**2
+                if d < min_dist:
+                    min_dist = d
+                    ti = i
+            self._astar_ti = ti
+
+            # take a chunk ahead and resample to 0.1m spacing
+            chunk = traj[ti:ti + 20]
+            while len(chunk) < 2:
+                chunk = list(chunk) + [traj[-1]]
+
+            pts = np.array([[wp.x, wp.y] for wp in chunk])
+            dists = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))])
+            total = dists[-1]
+            new_dists = np.arange(0, total, 0.1)
+            ego_pts_world = np.stack([
+                np.interp(new_dists, dists, pts[:, 0]),
+                np.interp(new_dists, dists, pts[:, 1])
+            ], axis=1)
+
+            # convert to ego frame
+            if total < 0.01 or len(new_dists) == 0:
+                ego_pts = [[0.1 * (i+1), 0.0] for i in range(20)]
+            else:
+                ego_pts = []
+                for wx, wy in ego_pts_world[:20]:
+                    dx, dy = wx - loc.x, wy - loc.y
+                    ex = dx * np.cos(-yaw) - dy * np.sin(-yaw)
+                    ey = dx * np.sin(-yaw) + dy * np.cos(-yaw)
+                    ego_pts.append([ex, ey])
+                while len(ego_pts) < 20:
+                    ego_pts.append(ego_pts[-1])
+
+            route_waypoints = torch.tensor(np.array(ego_pts), dtype=torch.float32).unsqueeze(0)
+
+            TARGET_SPEED = 1.5
+            dt = 0.25
+            speed_wps = np.array([[TARGET_SPEED * dt * (i+1), 0.0] for i in range(20)], dtype=np.float32)
+            speed_waypoints = torch.tensor(speed_wps, dtype=torch.float32).unsqueeze(0)
+
+            print(f"[astar] ti={ti}/{len(traj)} ego0=({ego_pts[0][0]:.2f},{ego_pts[0][1]:.2f})")
+
+        return super().control_pid(route_waypoints, velocity, speed_waypoints)
+
+    def update_astar_trajectory(self, traj_points):
+        if not traj_points:
+            return
+        self.latest_astar_trajectory = np.array([[p.x, p.y] for p in traj_points], dtype=np.float32)
+
+
+    def run_step_testbed_astar(self, timestamp):
+        """Use hardcoded A* trajectory instead of model."""
+        if self.latest_frame is None:
+            print("No frame yet")
+            return carla.VehicleControl(brake=1.0)
+
+        if not hasattr(self, '_astar_trajectory') or not self._astar_trajectory:
+            print("ERROR: _astar_trajectory not initialized or empty (A* may have failed).")
+            return carla.VehicleControl(brake=1.0)
+
+        self.step += 1
+        actor = self.hero_actor
+        loc = actor.get_location()
+
+        transform = actor.get_transform()
+        yaw = np.deg2rad(transform.rotation.yaw)
+        pitch = np.deg2rad(transform.rotation.pitch)
+        orientation = np.array([np.cos(pitch) * np.cos(yaw), np.cos(pitch) * np.sin(yaw), np.sin(pitch)])
+
+        vel = actor.get_velocity()
+        vel_np = np.array([vel.x, vel.y, vel.z])
+        speed = np.dot(vel_np, orientation)
+
+        # Advance ti to the nearest trajectory point (never backward). The old
+        # version gated this on `dc < 1.0m`, so once the car drove >1m past the
+        # current waypoint ti froze and control_pid was fed a route anchored
+        # BEHIND the car -> severe steering oscillation. Match run_step_testbed_debug:
+        # advance while the next point is closer than the current one.
+        traj = self._astar_trajectory
+        ti = self._astar_ti
+        while ti + 1 < len(traj):
+            dc = (traj[ti].x - loc.x) ** 2 + (traj[ti].y - loc.y) ** 2
+            dn = (traj[ti + 1].x - loc.x) ** 2 + (traj[ti + 1].y - loc.y) ** 2
+            if dn < dc:
+                ti += 1
+            else:
+                break
+
+        # Cross a forward<->reverse apex. At a direction switch the A* path doubles
+        # back, so nearest-point advance pins ti at the apex (both neighbors are
+        # farther) and the car would brake there forever. Once we've essentially
+        # reached the apex point, step ti past it so the controller commits to the
+        # new (reverse) segment instead of stalling.
+        APEX_REACHED_SQ = 1.5 ** 2  # m^2
+        while ti + 1 < len(traj):
+            dc = (traj[ti].x - loc.x) ** 2 + (traj[ti].y - loc.y) ** 2
+            cur_d = getattr(traj[ti], 'direction', Direction.FORWARD)
+            nxt_d = getattr(traj[ti + 1], 'direction', Direction.FORWARD)
+            if dc < APEX_REACHED_SQ and nxt_d != cur_d:
+                ti += 1
+            else:
+                break
+        self._astar_ti = ti
+
+         # ---------------------------------------------------------------
+
+        # Draw trajectory. life_time matches one tick (0.05s @ 20Hz) so the lines
+        # don't stack into a bright blob — they're redrawn every step anyway.
+        world = self.hero_actor.get_world()
+        for i in range(len(traj) - 1):
+            p1 = traj[i]
+            p2 = traj[i + 1]
+            world.debug.draw_line(
+                carla.Location(x=p1.x, y=p1.y, z=0.5),
+                carla.Location(x=p2.x, y=p2.y, z=0.5),
+                thickness=0.1,
+                color=carla.Color(0, 255, 255),  # cyan
+                life_time=0.06
+            )
+        # Highlight current waypoint in green
+        if ti < len(traj):
+            p = traj[ti]
+            world.debug.draw_point(
+                carla.Location(x=p.x, y=p.y, z=0.8),
+                size=0.2,
+                color=carla.Color(0, 255, 0),  # green
+                life_time=0.06
+            )
+
+        # Driving direction of the current segment (from the nearest A* point).
+        cur_dir = getattr(traj[ti], 'direction', Direction.FORWARD)
+        is_rev = (cur_dir == Direction.REVERSE)
+
+        # Slice points and transform to ego frame. Take a wide window so we can drop
+        # points on the wrong side of the car before handing the route to the lateral PID.
+        N = 30
+        dt = 0.25
+        compass = preprocess_compass(yaw + np.deg2rad(90.0))
+        cur_xy = np.array([loc.x, loc.y], dtype=np.float32)
+        window = traj[ti:ti + N + 30]
+        ego_all = np.stack([
+            inverse_conversion_2d(np.array([p.x, p.y], dtype=np.float32), cur_xy, compass)
+            for p in window
+        ]).astype(np.float32)
+
+        # CRITICAL: the route handed to control_pid must LEAD AWAY from the car in the
+        # direction of travel. interpolate_waypoints prepends [0,0] (the car) and the
+        # lateral PID aims ~2.4m along the arc-length-resampled path. If the leading
+        # points are on the wrong side of the car (e.g. behind it while driving forward,
+        # which happens because hybrid A* roots its path at/behind the rear axle), that
+        # lookahead point lands behind -> heading_error ~180deg -> full-lock swerving.
+        # Forward: keep points ahead (ego x>0.1). Reverse: keep points behind (x<-0.1);
+        # SimLingoAdapter.control_pid mirrors the route's x in reverse, so behind-points
+        # become forward-leading in the mirrored frame.
+        if is_rev:
+            sel = np.where(ego_all[:, 0] < -0.1)[0]
+        else:
+            sel = np.where(ego_all[:, 0] > 0.1)[0]
+        start = int(sel[0]) if len(sel) else 0
+        ego_pts = ego_all[start:start + N]
+        if len(ego_pts) < N:
+            pad = np.repeat(ego_pts[-1:], N - len(ego_pts), axis=0)
+            ego_pts = np.concatenate([ego_pts, pad], axis=0)
+        pred_route = torch.from_numpy(ego_pts[np.newaxis])
+
+         # ---------------------------------------------------------------
+
+        # Direction-aware speed waypoints.
+        # Two issues with using raw A* speeds directly:
+        #   1. brake_ratio=1.1 means ANY overshoot >10% triggers hard brake; with a
+        #      constant setpoint the PID winds up and overshoots ~2x every cycle.
+        #      Fix: raise brake_ratio just for this step (restore after control_pid).
+        #   2. The A* apex point has speed ~0.14 m/s < brake_speed=0.15 -> permanent
+        #      unconditional brake. Fix: clamp target to min 0.4 m/s (the config default)
+        #      except when we actually want to stop (near end of trajectory).
+        raw_speed = abs(getattr(traj[ti], 'speed', 0.0))
+        near_end = (len(traj) - ti) < 5
+        target_speed = raw_speed if near_end else max(raw_speed, 0.5)
+        sign = -1.0 if is_rev else 1.0
+        speed_wps = np.array(
+            [[sign * target_speed * dt * (i + 1), 0.0] for i in range(N)], dtype=np.float32
+        )
+        pred_speed_wps = torch.from_numpy(speed_wps[np.newaxis])
+        gt_velocity = torch.FloatTensor([[float(speed)]])
+
+        steer, throttle, brake = self.control_pid(pred_route, gt_velocity, pred_speed_wps)
+
+        if self.step < self.config.inital_frames_delay:
+            control = carla.VehicleControl(0.0, 0.0, 1.0)
+        else:
+            control = carla.VehicleControl(
+                steer=float(steer), throttle=float(throttle), brake=float(brake)
+            )
+            # Engage reverse gear when control_pid detected a reverse segment.
+            control.reverse = bool(getattr(self, '_reverse_intent', False))
+        self.control = control
+
+        print(
+            f"[astar] step={self.step} ti={ti}/{len(traj)} dir={'REV' if is_rev else 'FWD'} "
+            f"v={float(speed):.2f} tgt={target_speed:.2f} "
+            f"steer={float(steer):.3f} thr={float(throttle):.3f} brk={int(bool(brake))} "
+            f"ego0=({float(ego_pts[0,0]):.2f},{float(ego_pts[0,1]):.2f})"
+        )
+        return control
+
+    def init_astar_trajectory(self, trajectory_points):
+        """Initialize the A* trajectory. trajectory_points should be a list of TrajectoryPoint objects."""
+        self._astar_trajectory = trajectory_points
+        self._astar_ti = 0
+
+        print(f"Initialized A* trajectory with {len(trajectory_points)} points")
+        print(f"Last 5 waypoints:")
+        for wp in trajectory_points[-5:]:
+            print(f"  x={wp.x:.2f} y={wp.y:.2f} angle={np.rad2deg(wp.angle):.1f} dir={wp.direction}")
+        print(f"dest_angle={np.rad2deg(self._dest_angle):.1f}")
