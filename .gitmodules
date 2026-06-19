@@ -1,0 +1,4 @@
+[submodule "vla_adapter/simlingo"]
+	path = vla_adapter/simlingo
+	url = git@github.com:shamakg/simlingo.git
+	branch = collision_probs
