@@ -44,7 +44,7 @@ from collect_data import (
     _EPISODE_MODE_MAP, TRAIN_SCENARIOS, run_scenario,
 )
 from crossing_gmm import render_route_risk_grid, heatmap_on_topdown
-from config import (HORIZON_SCALE as HEATMAP_HORIZON, HEATMAP_RADIUS_M,
+from config import (HORIZON_SCALE as HEATMAP_HORIZON,
                     ROUTE_CORRIDOR_HALF_WIDTH,
                     TOPDOWN_HEIGHT, TOPDOWN_SIZE, TOPDOWN_FOV)
 

@@ -8,8 +8,8 @@ DEF_OBS_HALF_WIDTH  = 1.0   # m
 
 # GMM sweep parameters (build_crossing_snapshots defaults)
 HORIZON_SCALE = 2.5    # project obstacles this far beyond cross_distance (1.0 = lane only)
-TIME_HORIZON  = 8.0    # total sweep window (seconds)
-N_TIME        = 24     # number of time samples across the window
+TIME_HORIZON  = 10.0    # total sweep window (seconds)
+N_TIME        = 25     # number of time samples across the window
 SIGMA_LON     = 0.25   # longitudinal positional std (m); time-sweep supplies the range
 SIGMA_LAT0    = 0.35   # initial lateral std at the edge point (m)
 CONE_RATE     = 0.18   # lateral std growth rate (m per m of downrange distance)
@@ -21,7 +21,7 @@ TOPDOWN_SIZE   = 512    # output image size (pixels)
 TOPDOWN_FOV    = 90.0   # camera field of view (degrees)
 
 # Rendering / data-collection
-HEATMAP_RADIUS_M          = 12.0   # zero risk beyond this radius from ego centre (m) [legacy circular mask]
+# HEATMAP_RADIUS_M          = 12.0   # zero risk beyond this radius from ego centre (m) [legacy circular mask]
 ROUTE_CORRIDOR_HALF_WIDTH = 1.5    # zero risk beyond this lateral distance from the A* route centreline (m)
 
 # In-corridor pixels whose risk is below this fraction are raised to it, so the

@@ -89,7 +89,7 @@ data_module:
     commentary_augmentation: True
     img_augmentation: True
     img_augmentation_prob: 0.5
-    img_shift_augmentation: False ### for heatmap version
+    img_shift_augmentation: True ### topdown BEV is shift-warped to match (load_topdown_images)
     img_shift_augmentation_prob: 0.5
     route_as: target_point_command
     use_lmdrive_commands: True

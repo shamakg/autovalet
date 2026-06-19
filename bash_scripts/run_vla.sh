@@ -34,7 +34,7 @@ export HF_DATASETS_OFFLINE=1
 source /home/shamakg/envs/simlingo/bin/activate
 
 cd ~/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model 
-python3 '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/benchmark.py'  $1 --mode $2
+python3 '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/benchmark.py' --mode $1
 
 # python3 '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/benchmark.py' --mode STOP_EARLY
 # python3 '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/benchmark.py' --mode MISS

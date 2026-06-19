@@ -75,7 +75,7 @@ NETWORK_SEND_LATENCIES = [latency // IMAGE_DOWNSIZE for latency in NETWORK_SEND_
 # ---------------------------------------------------------------
 
 _DEFAULT_CHECKPOINT = (
-      "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/outputs/2026_05_30_23_47_08_parking_ft_v2_best/checkpoints/epoch=013.ckpt/last_fp32.pt"
+      "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/outputs/2026_06_18_15_50_10_parking_ft_v2/checkpoints/last_fp32.pt"
   )
 # ---------------------------------------------------------------
 # ---------------------------------------------------------------
@@ -114,6 +114,7 @@ def run_scenario(
     adapter_class=None,
     adapter_init_fn=None,
     enable_astar=False,
+    infer_every_tick=False,
 ):
     cam1 = None
     cam2 = None
@@ -219,6 +220,10 @@ def run_scenario(
             dest_for_model,
             dest_for_model.angle,
         )
+
+        # Run the model forward pass every tick (20 Hz) instead of the default
+        # data_save_freq-throttled 4 Hz. See agent_interface._wrap_model_for_timing.
+        adapter.infer_every_tick = infer_every_tick
 
         # Gives adapters that opt in (e.g. HeatmapSimLingoAdapter) access to the
         # live scenario for privileged ground-truth state (walker GMM, etc.).
@@ -434,6 +439,13 @@ def main():
              "(input_data['topdown_0']), built from privileged ground-truth collision "
              "risk. Requires a checkpoint trained with data_module.base_dataset.use_topdown.",
     )
+    parser.add_argument(
+        '--infer-every-tick',
+        action='store_true',
+        help="Run the model forward pass on every tick (20 Hz) instead of the default "
+             "4 Hz (re-predict every data_save_freq ticks). ~5x more inference; the PID "
+             "still steps every tick either way.",
+    )
     args = parser.parse_args()
     scenario_mode = ScenarioMode(args.mode)
     print(f"Running in mode: {scenario_mode.value}")
@@ -501,6 +513,7 @@ def main():
                 checkpoint_path=checkpoint_path,
                 adapter_class=adapter_class,
                 adapter_init_fn=adapter_init_fn,
+                infer_every_tick=args.infer_every_tick,
             )
             collisions.append(collisions_ref[0])
             walker_collisions.append(walker_collisions_ref[0])

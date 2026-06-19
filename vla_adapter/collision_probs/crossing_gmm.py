@@ -54,12 +54,12 @@ def _build_soft_rg_lut():
         if t < 0.5:
             s = t / 0.5
             r = int(60  + s * (220 - 60))    # 60  → 220
-            g = int(180)                      # 180 → 180  (flat)
+            g = int(110 + s * (200 - 110))   # 110 → 200  (darker green, brightens into amber peak)
             b = int(60  + s * (0   - 60))    # 60  → 0
         else:
             s = (t - 0.5) / 0.5
             r = int(220)                      # stays 220
-            g = int(180 + s * (30 - 180))    # 180 → 30
+            g = int(200 + s * (30 - 200))    # 200 → 30  (amber peak, falls off to red)
             b = int(0)                        # stays 0
         lut[i, 0] = (b, g, r)               # OpenCV uses BGR
     return lut
@@ -386,7 +386,7 @@ def heatmap_on_topdown(topdown_img, risk, risk_floor=0.05):
         risk = risk / 255.0
     color_bgr = colorize_soft(risk)
     color_rgb = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2RGB).astype(np.float32)
-    alpha = (0.25 + 0.30 * np.clip(risk * 3.0, 0.0, 1.0))[..., np.newaxis]
+    alpha = (0.35 + 0.50 * np.clip(risk * 3.0, 0.0, 1.0))[..., np.newaxis]
     blended = np.clip(
         topdown_img.astype(np.float32) * (1.0 - alpha) + color_rgb * alpha,
         0, 255).astype(np.uint8)

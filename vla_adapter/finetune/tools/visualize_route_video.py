@@ -18,6 +18,11 @@ Usage
     # explicit data root with all episodes
     python visualize_route_video.py --all --data-dir /path/to/RouteScenario_parking
 
+    # only the "opposite" car scenarios (opposite_collide, opposite_near_miss,
+    # opposite_stop_early), matched against episode_type
+    python visualize_route_video.py --all --scenario opposite
+    python visualize_route_video.py --all --scenario opposite_collide,opposite_stop_early
+
 Examples
 --------
     python visualize_route_video.py run_001/data/.../Town04_0080 --fps 10
@@ -390,6 +395,10 @@ def main():
                         help="Output file for single-episode mode")
     parser.add_argument("--out-dir", type=pathlib.Path, default=None,
                         help="Output directory for --all mode")
+    parser.add_argument("--scenario", type=str, default=None,
+                        help="Comma-separated episode_type filter for --all mode "
+                             "(substring match, e.g. 'opposite' or "
+                             "'opposite_collide,opposite_stop_early')")
     args = parser.parse_args()
 
     if args.all:
@@ -398,6 +407,20 @@ def main():
             sys.exit(f"Data dir not found: {data_dir}")
         out_dir = args.out_dir or data_dir.parent / "route_videos"
         episodes = sorted(data_dir.glob("Town04_*"))
+
+        if args.scenario:
+            filters = [s.strip() for s in args.scenario.split(",") if s.strip()]
+            filtered = []
+            for ep in episodes:
+                meta_path = ep / "episode_meta.json"
+                if not meta_path.exists():
+                    continue
+                ep_type = json.load(open(meta_path)).get("episode_type", "")
+                if any(f in ep_type for f in filters):
+                    filtered.append(ep)
+            episodes = filtered
+            print(f"Filtered to {len(episodes)} episodes matching scenario(s): {filters}")
+
         print(f"Processing {len(episodes)} episodes -> {out_dir}")
         for ep in episodes:
             out_path = out_dir / f"{ep.name}_route.mp4"

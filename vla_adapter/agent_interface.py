@@ -46,19 +46,18 @@ class SimLingoAdapter(LingoAgent):
         self.latest_pred_route = None
         self._reverse_intent = False
 
+        # When True, run the model forward pass on every tick (20 Hz) instead of
+        # reusing cached waypoints between data_save_freq-spaced inferences (4 Hz).
+        # Read live inside _wrap_model_for_timing, so callers can flip it after
+        # init_testbed (e.g. benchmark.py's --infer-every-tick flag).
+        self.infer_every_tick = False
+
         ### TUNING CONFIG CONSTANTS for parking compatibility
 
         # brake_speed: unconditional brake when desired < threshold.
-        # 0.15 prevents the creep_throttle+brake_ratio oscillation at very low
-        # desired speeds (model predicts near-zero during initial warm-up). The
-        # default 0.4 is too aggressive and brakes during slow parking maneuvers;
-        # 0.15 lets slow creep phases through while still stopping firmly at dest.
         self.config.brake_speed = 0.0
 
         # clip_throttle: cap max throttle to prevent runaway acceleration.
-        # Default 1.0 lets the speed PID wind up and overshoot 2x desired speed
-        # before brake_ratio can catch it. 0.5 gives a gentler ramp that stays
-        # within ~10% of the desired speed target.
         self.config.clip_throttle = 0.5
 
         self.turn_controller.default_lookahead = 45
@@ -223,7 +222,9 @@ class SimLingoAdapter(LingoAgent):
                 # waypoints in between. control_pid still runs every tick so
                 # the PID controllers step at full 20 Hz.
                 state['tick'] += 1
-                if state['cached'] is not None and (state['tick'] % adapter.config.data_save_freq != 0):
+                if (not adapter.infer_every_tick
+                        and state['cached'] is not None
+                        and state['tick'] % adapter.config.data_save_freq != 0):
                     return state['cached']
 
                 if torch.cuda.is_available():
