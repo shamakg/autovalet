@@ -31,7 +31,7 @@ import os
 import numpy as np
 
 DATA_DIR = (
-    "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/"
+    "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/"
     "finetune/run_001/data/simlingo/parking_ft/routes_training/"
     "RouteScenario_parking"
 )

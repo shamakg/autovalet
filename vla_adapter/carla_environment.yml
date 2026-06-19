@@ -142,5 +142,5 @@ dependencies:
       - yapf==0.43.0
       - yarl==1.23.0
 variables:
-  PYTHONPATH: /home/sumesh/carla_garage/scenario_runner
-prefix: /home/sumesh/miniforge3/envs/carla
+  PYTHONPATH: /home/shamakg/carla_garage/scenario_runner
+prefix: /home/shamakg/miniforge3/envs/carla

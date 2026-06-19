@@ -89,7 +89,7 @@ data_module:
     commentary_augmentation: True
     img_augmentation: True
     img_augmentation_prob: 0.5
-    img_shift_augmentation: True
+    img_shift_augmentation: False ### for heatmap version
     img_shift_augmentation_prob: 0.5
     route_as: target_point_command
     use_lmdrive_commands: True
@@ -109,7 +109,7 @@ seed: 9876
 name: parking_ft_v2
 resume: false
 
-checkpoint: /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt
+checkpoint: /home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt
 
 hydra:
   run:

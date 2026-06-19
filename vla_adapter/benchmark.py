@@ -43,6 +43,7 @@ from testbed.recording_utils import (
 )
 from parking_position import parking_vehicle_locations_Town04
 from agent_interface import SimLingoAdapter
+from collision_probs.heatmap_agent import HeatmapSimLingoAdapter
 from scenario_utils import (
     analyze_scenario, track_collisions,
     calculate_min_distance_to_door, compute_weighted_iou,
@@ -74,9 +75,7 @@ NETWORK_SEND_LATENCIES = [latency // IMAGE_DOWNSIZE for latency in NETWORK_SEND_
 # ---------------------------------------------------------------
 
 _DEFAULT_CHECKPOINT = (
-      '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/'
-      'vla_adapter/simlingo/outputs/2026_06_06_10_21_16_parking_ft_v2/'
-      'checkpoints/epoch=005_fp32.pt'
+      "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/outputs/2026_05_30_23_47_08_parking_ft_v2_best/checkpoints/epoch=013.ckpt/last_fp32.pt"
   )
 # ---------------------------------------------------------------
 # ---------------------------------------------------------------
@@ -220,6 +219,12 @@ def run_scenario(
             dest_for_model,
             dest_for_model.angle,
         )
+
+        # Gives adapters that opt in (e.g. HeatmapSimLingoAdapter) access to the
+        # live scenario for privileged ground-truth state (walker GMM, etc.).
+        # No-op for adapters that don't declare a parking_scenario attribute.
+        if hasattr(adapter, 'parking_scenario'):
+            adapter.parking_scenario = parking_scenario
 
         if adapter_init_fn is not None:
             adapter_init_fn(adapter)
@@ -422,10 +427,20 @@ def main():
         help="Scenario mode (default: pedestrian)",
     )
     parser.add_argument("--checkpoint", type=str, default=_DEFAULT_CHECKPOINT, help="Path to fp32 checkpoint .pt file")
+    parser.add_argument(
+        '--use-heatmap-input',
+        action='store_true',
+        help="Feed the model the topdown collision heatmap as a separate second view "
+             "(input_data['topdown_0']), built from privileged ground-truth collision "
+             "risk. Requires a checkpoint trained with data_module.base_dataset.use_topdown.",
+    )
     args = parser.parse_args()
     scenario_mode = ScenarioMode(args.mode)
     print(f"Running in mode: {scenario_mode.value}")
     checkpoint_path = args.checkpoint
+    adapter_class = HeatmapSimLingoAdapter if args.use_heatmap_input else None
+    if args.use_heatmap_input:
+        print("Using topdown collision-heatmap input (separate second view)")
     run_dir = make_run_dir()
     all_recording_paths = []
     car_list = [None]
@@ -457,10 +472,19 @@ def main():
             print(f'Running scenario: destination={destination_parking_spot}, parked_spots={parked_spots}')
             collisions_ref, near_misses_ref, walker_collisions_ref = [0], [0], [0]
             recording_path = None
+            adapter_init_fn = None
+            _model_input_path = None
             if RECORD:
                 recording_path = os.path.join(run_dir, f'scenario_{i+1}.mp4')
                 all_recording_paths.append(recording_path.replace('.mp4', '_chase.mp4'))
                 all_recording_paths.append(recording_path.replace('.mp4', '_topdown.mp4'))
+                if args.use_heatmap_input:
+                    _model_input_path = recording_path.replace('.mp4', '_model_input.mp4')
+                    all_recording_paths.append(_model_input_path)
+            if args.use_heatmap_input:
+                def adapter_init_fn(a, p=_model_input_path):
+                    if p is not None:
+                        a.start_model_input_recording(p)
             run_scenario(
                 world,
                 destination_parking_spot,
@@ -475,6 +499,8 @@ def main():
                 car_list,
                 scenario_mode=scenario_mode,
                 checkpoint_path=checkpoint_path,
+                adapter_class=adapter_class,
+                adapter_init_fn=adapter_init_fn,
             )
             collisions.append(collisions_ref[0])
             walker_collisions.append(walker_collisions_ref[0])

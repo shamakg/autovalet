@@ -13,7 +13,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _AUTOVALET_ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _HERE)
 sys.path.insert(0, _AUTOVALET_ROOT)
-sys.path.insert(0, "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/nuplan-devkit")
+sys.path.insert(0, "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/nuplan-devkit")
 
 _DP_ROOT = os.path.join(_HERE, "Diffusion-Planner")
 if _DP_ROOT not in sys.path:

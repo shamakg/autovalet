@@ -7,10 +7,10 @@ Run from autovalet/:
 import sys, os
 for p in [
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    '/home/sumesh/opt/carla/PythonAPI/carla',
-    '/home/sumesh/carla_garage/scenario_runner',
-    '/home/sumesh/carla_garage/leaderboard',
-    '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo',
+    '/home/shamakg/opt/carla/PythonAPI/carla',
+    '/home/shamakg/carla_garage/scenario_runner',
+    '/home/shamakg/carla_garage/leaderboard',
+    '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo',
 ]:
     if p not in sys.path:
         sys.path.insert(0, p)

@@ -61,6 +61,16 @@ def collect_dataset(world, output_dir):
     )
     random.shuffle(episode_types)
 
+    # Quick-test override, e.g. COLLECT_EPISODES="pedestrian_normal:3" or
+    # "pedestrian_normal:2,pedestrian_recovery:1". Unset -> full 500-episode run.
+    _override = os.environ.get("COLLECT_EPISODES")
+    if _override:
+        episode_types = []
+        for part in _override.split(","):
+            etype, _, count = part.strip().partition(":")
+            episode_types += [etype] * int(count or 1)
+        print(f"[COLLECT_EPISODES override] {len(episode_types)} episodes: {episode_types}")
+
     output_dir = pathlib.Path(output_dir)
     succeeded, failed = 0, 0
 
@@ -128,6 +138,10 @@ def get_offsets(episode_type):
     elif episode_type == 'normal_empty':
         y_offset = 0
         x_offset = np.random.uniform(-1.5, 1.5)
+
+    elif episode_type in ('opposite_collide', 'opposite_near_miss', 'opposite_stop_early'):
+        y_offset = 0
+        x_offset = np.random.uniform(-1.0, 1.0)
 
     return y_offset, x_offset
 
@@ -279,6 +293,18 @@ def save_boxes(save_path, frame, scenario):
         ujson.dump(boxes, f)
 
 
+def save_gmm_label(save_path, scenario):
+    """Per-episode candidate-future GMM label (WORLD frame) for the collision-risk
+    heatmap. Static over the episode; the offline renderer combines it with each
+    frame's ego pose from measurements. See collision_probs/crossing_gmm.py."""
+    walkers = []
+    for sub in getattr(scenario, 'list_scenarios', []):
+        walkers.extend(getattr(sub, 'gmm_candidate_futures', []))
+    out = pathlib.Path(save_path) / "gmm.json"
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump({'walkers': walkers}, f, indent=2)
+
+
 _EPISODE_MODE_MAP = {
     'normal':               ScenarioMode.CONE,
     'normal_empty':         ScenarioMode.EMPTY,
@@ -288,6 +314,9 @@ _EPISODE_MODE_MAP = {
     'pedestrian_normal':    ScenarioMode.PEDESTRIAN,
     'pedestrian_recovery':  ScenarioMode.PEDESTRIAN,
     'door_normal':          ScenarioMode.DOORMODE,
+    'opposite_collide':     ScenarioMode.COLLIDE,
+    'opposite_near_miss':   ScenarioMode.NEAR_MISS,
+    'opposite_stop_early':  ScenarioMode.STOP_EARLY,
 }
 
 def collect_episode(world, save_path, episode_type, destination, parked_spots):
@@ -329,6 +358,7 @@ def collect_episode(world, save_path, episode_type, destination, parked_spots):
             y_offset=aug_translation, yaw_offset=aug_rotation_deg,  # degrees, as CARLA expects
         )
         aug_camera[0].listen(lambda img: aug_frame_q.put(img) if not aug_frame_q.full() else None)
+        save_gmm_label(save_path, scenario)  # per-episode candidate-future GMM label
 
     def on_step(scenario):
         tick_count[0] += 1
@@ -411,7 +441,7 @@ if __name__ == '__main__':
     from testbed.v2_experiment_utils import load_client, town04_load, town04_spectator_bev
     from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 
-    OUTPUT = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune/run_001/"
+    OUTPUT = "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune/run_001/"
 
     client = load_client()
     world = town04_load(client)

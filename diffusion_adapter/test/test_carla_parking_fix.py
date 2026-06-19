@@ -20,7 +20,7 @@ never turns East, and/or collisions occur.  A scenario-level [FAIL] is printed f
 each broken assertion; the process exits 1 if any scenario fails.
 
 Run (requires CARLA server on localhost:2000):
-    /home/sumesh/envs/simlingo/bin/python test/test_carla_parking_fix.py
+    /home/shamakg/envs/simlingo/bin/python test/test_carla_parking_fix.py
 """
 
 import sys, os, time, json
@@ -32,9 +32,9 @@ _ADAPTER_ROOT = os.path.dirname(_HERE)
 _AUTOVALET    = os.path.dirname(_ADAPTER_ROOT)
 _NUPLAN_ROOT  = os.path.join(_ADAPTER_ROOT, "nuplan-devkit")
 _DP_ROOT      = os.path.join(_ADAPTER_ROOT, "Diffusion-Planner")
-_CARLA_ROOT   = "/home/sumesh/opt/carla/PythonAPI/carla"
-_SCENARIO_ROOT= "/home/sumesh/carla_garage/scenario_runner"
-_LB_ROOT      = "/home/sumesh/carla_garage/leaderboard"
+_CARLA_ROOT   = "/home/shamakg/opt/carla/PythonAPI/carla"
+_SCENARIO_ROOT= "/home/shamakg/carla_garage/scenario_runner"
+_LB_ROOT      = "/home/shamakg/carla_garage/leaderboard"
 
 for _p in [_CARLA_ROOT, _SCENARIO_ROOT, _LB_ROOT,
            _HERE, _AUTOVALET, _ADAPTER_ROOT, _NUPLAN_ROOT, _DP_ROOT]:

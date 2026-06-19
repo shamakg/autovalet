@@ -12,7 +12,7 @@ This script reuses the simlingo training infrastructure (no code modified)
 and runs one validation pass — no gradient updates, just loss computation.
 
 Must be run from the simlingo directory (same as train.sh):
-    cd /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo
+    cd /home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo
     python ../finetune/scripts/eval_destinations.py ...
 """
 

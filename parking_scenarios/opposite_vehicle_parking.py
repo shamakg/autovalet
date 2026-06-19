@@ -75,10 +75,32 @@ class OppositeDirectionVehicle(BasicScenario):
         )
 
     def _initialize_actors(self, config):
-      vehicle = CarlaDataProvider.request_new_actor('vehicle.tesla.model3', self.spawn_transform, actor_category = "car")
-      vehicle.set_location(self.spawn_transform.location + carla.Location(z=-200))
-      self.opposite_vehicle = vehicle
-      self.other_actors.append(vehicle)
+        vehicle = CarlaDataProvider.request_new_actor('vehicle.tesla.model3', self.spawn_transform, actor_category="car")
+        vehicle.set_location(self.spawn_transform.location + carla.Location(z=-200))
+        self.opposite_vehicle = vehicle
+        self.other_actors.append(vehicle)
+
+        import math
+        yaw_rad = math.radians(self.yaw)
+        cross_dir = [math.cos(yaw_rad), math.sin(yaw_rad)]
+        loc = self.spawn_transform.location
+        ext = vehicle.bounding_box.extent
+        # p_cross=1/3: prior — COLLIDE, STOP_EARLY, NEAR_MISS are equiprobable;
+        # only COLLIDE is a true crossing event.
+        # cross_distance = spawn-to-crossing-point (not drive_distance which is 100m
+        # and would spread the 24 time samples far off the ±18m grid).
+        # cone_rate=0.05: vehicles stay on-road, lateral spread is much smaller than pedestrians.
+        self.gmm_candidate_futures = [{
+            'edge_point':     [loc.x, loc.y],
+            'cross_dir':      cross_dir,
+            'cross_distance': self.cross_distance_m,
+            'speed':          float(self.speed),
+            'p_cross':        1.0 / 3.0,
+            'extent':         [float(ext.x), float(ext.y)],
+            'cone_rate':      0.05,
+        }]
+        # Note: 'longitudinal' flag no longer needed — travel_dir is embedded in
+        # each GMM mode by build_crossing_snapshots, which handles box orientation.
 
     def _create_behavior(self):
         """
@@ -146,10 +168,10 @@ class OppositeDirectionVehicle(BasicScenario):
             print(self.trigger_distance)
 
         elif self.collision_mode == CollisionMode.MISS:
-            
+
             spawn_y = min(town04_bound["y_max"], self.destination_loc.y + abs(self.destination_loc.y - ego_y) - self.miss_offset)
             actual_offset = abs(spawn_y - self.destination_loc.y)
-            
+
             self.trigger_distance = actual_offset * 2 + self.miss_offset
 
             print(self.trigger_distance)
@@ -162,6 +184,9 @@ class OppositeDirectionVehicle(BasicScenario):
 
             self.trigger_distance = actual_offset * 2
             self.drive_distance = actual_offset - 7 ## stop with leeway
+
+        # Distance from spawn to ego's crossing point — used by GMM to set sweep length.
+        self.cross_distance_m = float(actual_offset)
 
         spawn_location = carla.Location(x=close_x, y=spawn_y, z=1.0)
         return carla.Transform(spawn_location, carla.Rotation(yaw=self.yaw))

@@ -1,24 +1,24 @@
 #!/bin/bash
 set -e
 
-FINETUNE_DIR=/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune
+FINETUNE_DIR=/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune
 DATA_DIR=${FINETUNE_DIR}/run_001/data
 
 # ── environment ──────────────────────────────────────────────────────────────
-export CARLA_ROOT=/home/sumesh/opt/carla/PythonAPI/carla
-export WORK_DIR=/home/sumesh/carla_garage
+export CARLA_ROOT=/home/shamakg/opt/carla/PythonAPI/carla
+export WORK_DIR=/home/shamakg/carla_garage
 export CARLA_PORT=2000
 export SCENARIO_RUNNER_ROOT=${WORK_DIR}/scenario_runner
 export LEADERBOARD_ROOT=${WORK_DIR}/leaderboard
-export SIMLINGO_ROOT=/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo
+export SIMLINGO_ROOT=/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo
 export SIMLINGO_TEAM_CODE=${SIMLINGO_ROOT}/team_code
 export SIMLINGO_TRAINING=${SIMLINGO_ROOT}
 export PYTHONPATH="${CARLA_ROOT}:${SCENARIO_RUNNER_ROOT}:${LEADERBOARD_ROOT}:${SIMLINGO_TRAINING}:${SIMLINGO_TEAM_CODE}:${PYTHONPATH}"
 source /opt/ros/humble/setup.bash
-source /home/sumesh/envs/simlingo/bin/activate
+source /home/shamakg/envs/simlingo/bin/activate
 export HOST=localhost
 
-PYTHON=/home/sumesh/envs/simlingo/bin/python
+PYTHON=/home/shamakg/envs/simlingo/bin/python
 
 # ── CARLA cleanup (runs on exit for any reason) ───────────────────────────────
 CARLA_PID=""
@@ -38,7 +38,7 @@ rm -rf "${DATA_DIR}"
 
 # ── 2. start CARLA ───────────────────────────────────────────────────────────
 echo "[2/6] Starting CARLA (port ${CARLA_PORT})..."
-/home/sumesh/opt/carla/CarlaUE4.sh -RenderOffScreen -carla-port=${CARLA_PORT} &
+/home/shamakg/opt/carla/CarlaUE4.sh -RenderOffScreen -carla-port=${CARLA_PORT} &
 CARLA_PID=$!
 echo "      CARLA PID: ${CARLA_PID}"
 echo "      Waiting 20s for CARLA to be ready..."

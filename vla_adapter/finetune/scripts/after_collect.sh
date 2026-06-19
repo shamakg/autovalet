@@ -14,5 +14,5 @@ sleep 5
 echo "[after_collect] CARLA killed."
 
 echo "[after_collect] Starting training..."
-bash /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune/scripts/train.sh
+bash /home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune/scripts/train.sh
 echo "[after_collect] Training done."

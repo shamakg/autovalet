@@ -30,11 +30,223 @@ index d6295c4..a4b99fc 100644
 +
 +}
 \ No newline at end of file
+diff --git a/simlingo_training/callbacks/visualise.py b/simlingo_training/callbacks/visualise.py
+index bc250a2..02c3fcc 100644
+--- a/simlingo_training/callbacks/visualise.py
++++ b/simlingo_training/callbacks/visualise.py
+@@ -8,7 +8,26 @@ import matplotlib.pyplot as plt
+ import numpy as np
+ import pytorch_lightning as pl
+ import torch
++from pathlib import Path
++
+ from PIL import Image, ImageDraw, ImageFont
++
++
++def _load_font(size: int) -> ImageFont.FreeTypeFont:
++    candidates = [
++        Path(__file__).parent / "arial.ttf",
++        Path(__file__).parent.parent / "arial.ttf",
++        Path(__file__).parent / "DejaVuSans.ttf",
++    ]
++    try:
++        import imgaug
++        candidates.append(Path(imgaug.__file__).parent / "DejaVuSans.ttf")
++    except ImportError:
++        pass
++    for path in candidates:
++        if path.exists():
++            return ImageFont.truetype(str(path), size)
++    return ImageFont.load_default()
+ from pytorch_lightning import Callback, LightningModule, Trainer
+ from pytorch_lightning.callbacks import Callback
+ from pytorch_lightning.utilities import rank_zero_only
+@@ -217,9 +236,9 @@ def visualise_waypoints(batch: DrivingExample, waypoints, route=False, language_
+             lines_wrap = len(textwrap.wrap(wrapped_text, width=80))
+             lines_wrap_pred = len(textwrap.wrap(wrapped_pred_text, width=80))
+         
+-            white_draw.text((10, y_curr), f'{i} GT: {wrapped_text}', fill="black", font=ImageFont.truetype(f"{repo_root}/simlingo_training/arial.ttf", 20))
++            white_draw.text((10, y_curr), f'{i} GT: {wrapped_text}', fill="black", font=_load_font(20))
+             y_curr += 20*lines_wrap
+-            white_draw.text((10, y_curr), f'{i} Pred: {wrapped_pred_text}', fill="black", font=ImageFont.truetype(f"{repo_root}/simlingo_training/arial.ttf", 20))
++            white_draw.text((10, y_curr), f'{i} Pred: {wrapped_pred_text}', fill="black", font=_load_font(20))
+             y_curr += 20*lines_wrap_pred + 20
+         ax = fig.add_subplot(rows, cols, i + 1)
+         # Predicted waypoints
+diff --git a/simlingo_training/config.py b/simlingo_training/config.py
+index 2a18d18..ce48fa2 100644
+--- a/simlingo_training/config.py
++++ b/simlingo_training/config.py
+@@ -67,7 +67,11 @@ class DatasetBaseConfig:
+     img_shift_augmentation_prob: float = 0.5
+     
+     use_safety_flag: bool = False
+-    
++
++    # Feed a topdown collision-heatmap image as a second view (extra ViT tile)
++    # alongside the front camera. Reads <route>/topdown_heatmap/XXXX.png.
++    use_topdown: bool = True
++
+     num_route_points: int = 20
+ 
+     route_as: str = 'target_point_command' # target_point_command, target_point, command
+diff --git a/simlingo_training/dataloader/datamodule.py b/simlingo_training/dataloader/datamodule.py
+index b0d4a06..dfa5f89 100644
+--- a/simlingo_training/dataloader/datamodule.py
++++ b/simlingo_training/dataloader/datamodule.py
+@@ -49,6 +49,11 @@ class DataModule(LightningDataModule):
+ 
+         self.NUM_IMAGE_PATCHES = 2
+         self.IMAGES_TO_CONSIDER = ['image_ff'] # front-forward image, other images are not supported
++        # Optional second view: topdown collision heatmap as one extra ViT tile.
++        self.NUM_TOPDOWN_PATCHES = 1
++        self.use_topdown = getattr(self.base_dataset, 'use_topdown', False)
++        if self.use_topdown:
++            self.IMAGES_TO_CONSIDER = ['image_ff', 'topdown']
+         # taken from:
+         # https://github.com/OpenGVLab/InternVL/blob/9d3a709b16874e73ffdd38b9cf53296fae4589b9/internvl_chat/internvl/train/constants.py#L7
+         # https://github.com/OpenGVLab/InternVL/blob/9d3a709b16874e73ffdd38b9cf53296fae4589b9/internvl_chat/internvl/model/internvl_chat/modeling_internvl_chat.py#L294
+@@ -57,7 +62,8 @@ class DataModule(LightningDataModule):
+         self.IMG_CONTEXT_TOKEN='<IMG_CONTEXT>'
+ 
+         self.num_image_tokens_per_patch = get_num_image_tokens_per_patch(self.encoder_variant)
+-        self.num_image_tokens_total = self.num_image_tokens_per_patch * self.NUM_IMAGE_PATCHES
++        num_patches_total = self.NUM_IMAGE_PATCHES + (self.NUM_TOPDOWN_PATCHES if self.use_topdown else 0)
++        self.num_image_tokens_total = self.num_image_tokens_per_patch * num_patches_total
+             
+         # add <WAYPOINT> token
+         if 'tokenizer' in self.processor.__dict__:
+@@ -231,8 +237,11 @@ class DataModule(LightningDataModule):
+     def dl_collate_fn(self, data):
+         BS = len(data)
+         grid_nums = [self.NUM_IMAGE_PATCHES] # we split the front forward into two patches (1x2)
++        if self.use_topdown:
++            grid_nums.append(self.NUM_TOPDOWN_PATCHES)  # topdown heatmap as 1 extra tile
+ 
+         image_ff_pixel, image_ff_sizes = None, None
++        image_topdown_pixel = None
+         image_ff_org = torch.tensor(np.asarray([data[i].image_ff_org_size for i in range(BS)]))
+             
+         for idx, img_to_consider in enumerate(self.IMAGES_TO_CONSIDER):
+@@ -263,9 +272,19 @@ class DataModule(LightningDataModule):
+             if img_to_consider == 'image_ff':
+                 image_ff_pixel = images_pixel
+                 image_ff_sizes = image_sizes
++            elif img_to_consider == 'topdown':
++                image_topdown_pixel = images_pixel
+             else:
+                 raise ValueError(f"Image type {img_to_consider} not supported")
+ 
++        # Append the topdown tile(s) along the patch/view dim (N of [B,T,N,C,H,W]).
++        # The model runs every tile through extract_feature and fills the same
++        # <IMG_CONTEXT> block in order, so ff tiles come first then topdown.
++        if self.use_topdown and image_topdown_pixel is not None:
++            camera_images = torch.cat([image_ff_pixel, image_topdown_pixel], dim=2)
++        else:
++            camera_images = image_ff_pixel
++
+         conversations = [data[i].conversation for i in range(BS)]
+         conversation_dict, question_dict = get_custom_chat_template(conversations, self.tokenizer, self.encoder_variant, self.num_image_tokens_total)
+ 
+@@ -317,7 +336,7 @@ class DataModule(LightningDataModule):
+             eval_infos = None
+         
+         driving_input=DrivingInput(
+-                camera_images=image_ff_pixel,  # [B, T, N, C, H, W] uint8 [0, 255]
++                camera_images=camera_images,  # [B, T, N, C, H, W] uint8 [0, 255] (ff [+ topdown])
+                 image_sizes=image_ff_sizes,
+                 camera_intrinsics = torch.repeat_interleave(get_camera_intrinsics(W, H, 110).unsqueeze(0), BS, dim=0).view(BS, 3, 3).float(),
+                 camera_extrinsics = torch.repeat_interleave(get_camera_extrinsics().unsqueeze(0), BS, dim=0).view(BS, 4, 4).float(),
 diff --git a/simlingo_training/dataloader/dataset_base.py b/simlingo_training/dataloader/dataset_base.py
-index 4dc056c..86201cd 100644
+index 4dc056c..47c9ebd 100644
 --- a/simlingo_training/dataloader/dataset_base.py
 +++ b/simlingo_training/dataloader/dataset_base.py
-@@ -508,7 +508,8 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+@@ -47,9 +47,11 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+         filter_infractions_per_route = True
+ 
+         self.rgb_folder = 'rgb'
++        self.topdown_folder = 'topdown_heatmap'   # second view (collision heatmap)
+         self.dreamer_folder = 'dreamer'
+-        
++
+         self.images = []
++        self.topdowns = []
+         self.boxes = []
+         self.measurements = []
+         self.sample_start = []
+@@ -276,6 +278,7 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+ 
+             for seq in range(self.skip_first_n_frames, num_seq - self.pred_len - self.hist_len - 1):
+                 image = []
++                topdown = []
+                 box = []
+                 measurement = []
+                 augment_exist = False
+@@ -311,6 +314,7 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+                 augment_exist = True
+                 for idx in range(self.hist_len):
+                     image.append(route_dir +  f'/{self.rgb_folder}' + (f'/{(seq + idx):04}.jpg'))
++                    topdown.append(route_dir + f'/{self.topdown_folder}' + (f'/{(seq + idx):04}.jpg'))
+                     box.append(route_dir + '/boxes' + (f'/{(seq + idx):04}.json.gz'))
+ 
+                 if skip:
+@@ -323,6 +327,7 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+                 measurement.append(route_dir + '/measurements')
+ 
+                 self.images.append(image)
++                self.topdowns.append(topdown)
+                 self.boxes.append(box)
+                 self.measurements.append(measurement)
+                 self.sample_start.append(seq)
+@@ -338,6 +343,7 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+         # A workaround is to store the string lists as numpy byte objects
+         # because they only have 1 refcount.
+         self.images = np.array(self.images).astype(np.string_)
++        self.topdowns = np.array(self.topdowns).astype(np.string_)
+         self.boxes = np.array(self.boxes).astype(np.string_)
+         self.measurements = np.array(self.measurements).astype(np.string_)
+         if dreamer:
+@@ -459,7 +465,7 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+ 
+             if self.img_augmentation: # and random.random() <= self.img_augmentation_prob:
+                 images_i = self.tfs(image=images_i)
+-            
++
+             image_org = images_i.copy()
+             if self.cut_bottom_quarter or self.img_shift_augmentation:
+                 # to remove the bonnet whih is important for the shifted camera augmentation
+@@ -481,6 +487,30 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+ 
+         return data
+ 
++    def load_topdown_images(self, data, topdown_paths, modality_dropout_prob=0.0):
++        """Load the topdown collision-heatmap view (second image tile).
++
++        Mirrors load_images but: no rgb->rgb_augmented swap and no
++        cut_bottom_quarter (the BEV is the same regardless of the lateral camera
++        shift and has no bonnet). modality_dropout_prob blanks the tile some
++        fraction of steps so the model doesn't become fully dependent on it.
++        """
++        loaded = []
++        for i in range(self.hist_len):
++            path = str(topdown_paths[i], encoding='utf-8')
++            if not os.path.isfile(path):
++                print(f"File not found: {path}")
++                raise FileNotFoundError
++            img = cv2.imread(path, cv2.IMREAD_COLOR)
++            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
++            if modality_dropout_prob > 0 and random.random() < modality_dropout_prob:
++                img = np.zeros_like(img)
++            loaded.append(img)
++
++        processed = np.transpose(np.asarray(loaded), (0, 3, 1, 2))  # (T, C, H, W)
++        data['topdown'] = processed
++        return data
++
+     def get_navigational_conditioning(self, data, current_measurement, target_point, next_target_point):
+         placeholder_values = {}
+         target_options = []
+@@ -508,7 +538,8 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
                  3: 'go straight at the next intersection',
                  4: 'follow the road',
                  5: 'do a lane change to the left',
@@ -44,7 +256,7 @@ index 4dc056c..86201cd 100644
              }
              command_template_mappings = {
                  1: [0, 2, 4, 7],
-@@ -517,6 +518,7 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+@@ -517,6 +548,7 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
                  4: [38, 40, 42, 43, 44, 45],
                  5: [34, 36],
                  6: [35, 37],
@@ -52,7 +264,7 @@ index 4dc056c..86201cd 100644
              }
              command = map_command[current_measurement["command"]]
              next_command = map_command[current_measurement["next_command"]]
-@@ -524,17 +526,20 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
+@@ -524,17 +556,20 @@ class BaseDataset(Dataset):  # pylint: disable=locally-disabled, invalid-name
                  next_command = f' then {next_command}'
              else:
                  next_command = ''
@@ -79,11 +291,91 @@ index 4dc056c..86201cd 100644
                  target_options.append(lm_command)
          
          return target_options, placeholder_values
+diff --git a/simlingo_training/dataloader/dataset_driving.py b/simlingo_training/dataloader/dataset_driving.py
+index 8f8a1d5..c4f8906 100644
+--- a/simlingo_training/dataloader/dataset_driving.py
++++ b/simlingo_training/dataloader/dataset_driving.py
+@@ -37,6 +37,7 @@ class Data_Driving(BaseDataset):  # pylint: disable=locally-disabled, invalid-na
+ 
+         data = {}
+         images = self.images[index]
++        topdowns = self.topdowns[index] if getattr(self, 'use_topdown', False) else None
+         measurements = self.measurements[index]
+         sample_start = self.sample_start[index]
+         augment_exists = self.augment_exists[index]
+@@ -275,6 +276,8 @@ class Data_Driving(BaseDataset):  # pylint: disable=locally-disabled, invalid-na
+         ######## load current and past images ########
+         ######################################################
+         data = self.load_images(data, images, augment_sample=augment_sample)
++        if getattr(self, 'use_topdown', False):
++            data = self.load_topdown_images(data, topdowns, modality_dropout_prob=0.2)
+         
+ 
+         conversation_answer = [
+@@ -308,6 +311,7 @@ class Data_Driving(BaseDataset):  # pylint: disable=locally-disabled, invalid-na
+             answer = conversation_answer,
+             image_ff = data['rgb'],
+             image_ff_org_size=data['rgb_org_size'],
++            topdown = data.get('topdown'),
+             waypoints = data["waypoints"],
+             waypoints_1d = data["waypoints_1d"],
+             path = data['route_adjusted'],
+diff --git a/simlingo_training/models/adaptors/adaptors.py b/simlingo_training/models/adaptors/adaptors.py
+index ca5c6fb..f53d9ce 100644
+--- a/simlingo_training/models/adaptors/adaptors.py
++++ b/simlingo_training/models/adaptors/adaptors.py
+@@ -141,11 +141,12 @@ class DrivingAdaptor(nn.Module):
+             **kwargs
+             ) -> Dict[str, Tensor]:
+ 
+-        try:
++        # CHANGE MADE BY SHAMAK: hasattr() instead of try/except for torch.compile compatibility
++        if hasattr(driving_example, 'driving_input'):
+             driving_input = driving_example.driving_input
+-        except AttributeError:
++        else:
+             driving_input = driving_example
+-        
++
+         b = driving_input.camera_images.shape[0]
+         inputs = None
+ 
+@@ -236,11 +237,12 @@ class LanguageAdaptor(nn.Module):
+ 
+ 
+     def forward(self, example: DrivingExample, inference=False, **kwargs) -> Dict[str, Tensor]:
+-        try:
++        # CHANGE MADE BY SHAMAK: hasattr() instead of try/except for torch.compile compatibility
++        if hasattr(example, 'driving_input'):
+             driving_input = example.driving_input
+-        except AttributeError:
++        else:
+             driving_input = example
+-            
++
+         b = driving_input.camera_images.size(0)
+         
+         if inference:
 diff --git a/simlingo_training/models/driving.py b/simlingo_training/models/driving.py
-index e9f8bf4..26e9834 100644
+index e9f8bf4..72576c3 100644
 --- a/simlingo_training/models/driving.py
 +++ b/simlingo_training/models/driving.py
-@@ -272,12 +272,21 @@ class DrivingModel(pl.LightningModule):
+@@ -110,9 +110,12 @@ class DrivingModel(pl.LightningModule):
+         Samples a trajectory from the model.
+         """
+         self.speed_wps, self.route, self.language = None, None, []
+-        try:
++        # CHANGE MADE BY SHAMAK: replaced try/except AttributeError with hasattr() so
++        # torch.compile (TorchDynamo) can trace through this branch without raising.
++        # try/except AttributeError is not handled correctly by dynamo's symbolic tracer.
++        if hasattr(example, 'driving_input'):
+             driving_input = example.driving_input
+-        except AttributeError:
++        else:
+             driving_input = example
+         
+         if driving_input is not None:
+@@ -272,12 +275,21 @@ class DrivingModel(pl.LightningModule):
  
  
      def validation_step(self, batch: DrivingExample, _batch_idx: int = 0):
@@ -108,11 +400,74 @@ index e9f8bf4..26e9834 100644
          self.log("val/loss", output.loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
  
          return {"loss": output.loss, "outputs": output}
+@@ -727,6 +739,6 @@ class DrivingModel(pl.LightningModule):
+         else:
+             max_steps = self.trainer.max_steps
+         scheduler = torch.optim.lr_scheduler.OneCycleLR(
+-            optimizer, max_lr=self.lr, total_steps=max_steps, pct_start=self.pct_start, verbose=False
++            optimizer, max_lr=self.lr, total_steps=max_steps, pct_start=self.pct_start
+         )
+         return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler, "frequency": 1, "interval": "step"}}
+diff --git a/simlingo_training/models/encoder/internvl2_model.py b/simlingo_training/models/encoder/internvl2_model.py
+index 58964e9..4e88d5b 100644
+--- a/simlingo_training/models/encoder/internvl2_model.py
++++ b/simlingo_training/models/encoder/internvl2_model.py
+@@ -123,7 +123,7 @@ class LingoInternVLModel(nn.Module):
+                 try:
+                     inputs_embeds[selected] = inputs_embeds[selected] * 0.0 + vit_embeds.reshape(-1, C_embed)
+                 except Exception as e:
+-                    vit_embeds = vit_embeds.reshape(-1, C)
++                    vit_embeds = vit_embeds.reshape(-1, C_embed)
+                     print(f'warning: {e}, inputs_embeds[selected].shape={inputs_embeds[selected].shape}, '
+                         f'vit_embeds.shape={vit_embeds.shape}')
+                     n_token = selected.sum()
+diff --git a/simlingo_training/utils/custom_types.py b/simlingo_training/utils/custom_types.py
+index 889e33f..77c8f02 100644
+--- a/simlingo_training/utils/custom_types.py
++++ b/simlingo_training/utils/custom_types.py
+@@ -17,6 +17,7 @@ class DatasetOutput(NamedTuple):
+     dataset: Optional[str]
+     qa_templates: Optional[Tuple[str, str]] = None
+     eval_infos: Optional[Dict] = None
++    topdown: Optional[Tensor] = None   # second view (topdown collision heatmap)
+ 
+ class LanguageLabel(NamedTuple):
+     phrase_ids: Tensor  # [B, max(len(tokens))] int64
 diff --git a/team_code/agent_simlingo.py b/team_code/agent_simlingo.py
-index 4675d47..0494e96 100644
+index 4675d47..d2ecf62 100644
 --- a/team_code/agent_simlingo.py
 +++ b/team_code/agent_simlingo.py
-@@ -685,6 +685,10 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
+@@ -406,7 +406,19 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
+             new_height = processed_image.shape[3]
+             new_width = processed_image.shape[4]
+             processed_image = processed_image.view(1, self.T, num_patches, C, new_height, new_width)
+-            
++
++            # Optional second view: topdown collision heatmap as one extra ViT tile,
++            # mirroring the training-time IMAGES_TO_CONSIDER=['image_ff','topdown'] path.
++            # Supplied by the adapter as RGB HWC uint8 in input_data['topdown_0'].
++            use_topdown = bool(OmegaConf.select(self.cfg, 'data_module.base_dataset.use_topdown', default=False))
++            if use_topdown and input_data.get('topdown_0') is not None:
++                td_rgb = input_data['topdown_0'][1]
++                td_tiles = dynamic_preprocess(Image.fromarray(td_rgb), image_size=448,
++                                              use_thumbnail=self.cfg.model.vision_model.use_global_img, max_num=1)
++                td_pixel = torch.stack([transform(t) for t in td_tiles])
++                td_pixel = td_pixel.view(1, self.T, td_pixel.shape[0], C, new_height, new_width)
++                processed_image = torch.cat([processed_image, td_pixel], dim=2)
++
+         else:
+             raise NotImplementedError(f"Encoder {self.cfg.data_module.encoder} not implemented yet")
+         
+@@ -633,7 +645,7 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
+                 IMG_START_TOKEN='<img>'
+                 IMG_END_TOKEN='</img>'
+                 IMG_CONTEXT_TOKEN='<IMG_CONTEXT>'
+-                num_patches_all = 2 # sum(grid_nums)
++                num_patches_all = processed_image.shape[2] # ff tiles (+ topdown tile); sum(grid_nums)
+ 
+                 image_tokens = IMG_START_TOKEN + IMG_CONTEXT_TOKEN * self.num_image_token * num_patches_all + IMG_END_TOKEN
+                 query = query.replace('<image>', image_tokens, 1)
+@@ -685,6 +697,10 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
          pred_speed_wps = pred_speed_wps.float() if pred_speed_wps is not None else None
          pred_route = pred_route.float() if pred_route is not None else None
  
@@ -123,7 +478,19 @@ index 4675d47..0494e96 100644
          # prepare velocity input
          gt_velocity = tick_data['speed']
  
-@@ -960,4 +964,4 @@ def residual_state_x(a, b):
+@@ -806,7 +822,10 @@ class LingoAgent(autonomous_agent.AutonomousAgent):
+         """
+         assert route_waypoints.size(0) == 1
+         route_waypoints = route_waypoints[0].data.cpu().numpy()
+-        speed = velocity[0].data.cpu().numpy()
++        # CHANGE MADE BY SHAMAK: velocity[0] has shape (1,) not () because
++        # tick() stores speed as FloatTensor([v]).unsqueeze(0) → shape (1,1).
++        # Using .item() forces a Python scalar so the PID window stays homogeneous.
++        speed = velocity[0].cpu().item()
+         speed_waypoints = speed_waypoints[0].data.cpu().numpy()
+ 
+         # m / s required to drive
+@@ -960,4 +979,4 @@ def residual_state_x(a, b):
  def residual_measurement_h(a, b):
      y = a - b
      y[2] = t_u.normalize_angle(y[2])
@@ -255,4 +622,15 @@ index 3f0612d..5f43efc 100644
    else:
 -    return images_i
 +    return images_i
+\ No newline at end of file
+diff --git a/train_simlingo_seed1.sh b/train_simlingo_seed1.sh
+index 7595feb..e12d04d 100644
+--- a/train_simlingo_seed1.sh
++++ b/train_simlingo_seed1.sh
+@@ -24,4 +24,5 @@ export NCCL_DEBUG=INFO
+ 
+ export OMP_NUM_THREADS=64 # Limits pytorch to spawn at most num cpus cores threads
+ export OPENBLAS_NUM_THREADS=1  # Shuts off numpy multithreading, to avoid threads spawning other threads.
++export WANDB_ENTITY=shamakg
+ WANDB__SERVICE_WAIT=300 python simlingo_training/train.py experiment=simlingo_seed1 data_module.batch_size=8 gpus=8 name=simlingo_seed1
 \ No newline at end of file

@@ -556,8 +556,8 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    CKPT = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/model.pth"   # fill in
-    ARGS = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/args.json"
+    CKPT = "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/model.pth"   # fill in
+    ARGS = "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/args.json"
  
     model, config = load(CKPT, ARGS, device)
  

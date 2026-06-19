@@ -4,7 +4,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _AUTOVALET_ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, _HERE)
 sys.path.insert(0, _AUTOVALET_ROOT)
-sys.path.insert(0, "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/nuplan-devkit")
+sys.path.insert(0, "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/nuplan-devkit")
 
 _DP_ROOT = os.path.join(_HERE, "Diffusion-Planner")
 if _DP_ROOT not in sys.path:
@@ -25,8 +25,8 @@ from diffusion_planner.utils.config import Config
 from diffusion_planner.data_process.utils import convert_to_model_inputs
 from utils.map_process import LANE_NUM, build_map_features
 
-CKPT = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/model.pth"   # fill in
-ARGS = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/args.json"
+CKPT = "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/model.pth"   # fill in
+ARGS = "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/args.json"
 
 config = Config(ARGS, guidance_fn=None)
 da._config = config

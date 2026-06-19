@@ -10,6 +10,7 @@ from __future__ import print_function
 
 import py_trees
 import carla
+import numpy as np
 
 from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 from srunner.scenariomanager.scenarioatomics.atomic_behaviors import (ActorDestroy,
@@ -224,6 +225,12 @@ class PedestrianCrossingParking(BasicScenario):
         ### Overrode this method to ensure that pedestrians can be easily spawned
 
         # Spawn the walkers
+        # Per-walker candidate futures (WORLD frame) for the collision-risk heatmap.
+        # Each walker is bimodal: CROSS (sweeps the lane, weight p_cross) vs STAY
+        # (waits at the lane edge, weight 1 - p_cross). p_cross is the scenario PRIOR,
+        # not the realised random draw: must_cross walkers always cross (1.0), the
+        # rest cross 50% (random.randint(0,1) in _create_behavior).
+        self.gmm_candidate_futures = []
         i = 0
         for start_location in self.spawn_locations:
             spawn_transform = carla.Transform(start_location[0], carla.Rotation(yaw=start_location[1])) ## got from PedestrianCrossing init
@@ -256,6 +263,23 @@ class PedestrianCrossingParking(BasicScenario):
             walker_d['must_cross'] = start_location[3] if len(start_location) > 3 else False
 
             self._walker_data.append(walker_d)
+
+            # Crossing geometry: the walker emerges `clearance` to the lane edge,
+            # then crosses `_walker_distance` along its facing yaw.
+            yaw_rad = np.deg2rad(start_location[1])
+            heading = [float(np.cos(yaw_rad)), float(np.sin(yaw_rad))]
+            edge_point = [start_location[0].x + self.clearance * heading[0],
+                          start_location[0].y + self.clearance * heading[1]]
+            ext = walker.bounding_box.extent
+            must_cross = bool(start_location[3]) if len(start_location) > 3 else False
+            self.gmm_candidate_futures.append({
+                'edge_point':     edge_point,
+                'cross_dir':      heading,
+                'cross_distance': float(self._walker_distance),
+                'speed':          float(start_location[2]),
+                'p_cross':        1.0 if must_cross else 0.5,
+                'extent':         [float(ext.x), float(ext.y)],
+            })
             i += 1
             
     ## Following 3 functions copied from Pedestrian Scenario

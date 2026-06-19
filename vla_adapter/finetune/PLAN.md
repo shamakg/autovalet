@@ -205,3 +205,26 @@ When the car stops for pedestrians, I decided to cluster all the way points at t
 
 Potentially;
 Add Random Noise
+
+
+
+NEW research direction:
+Adding probabilistic heatmap (BEV, ego frame)
+For each pedestrian, we create a CDF of the probability. Will cross with probability 1/2 and won't cross with probability 1/2.
+We then use the minkowski bounding box overlap of:
+ The CROSS mode is a widening cone (lateral std grows with downrange distance via cone_rate), not a uniform smear. And the combination is:
+  - Across time snapshots: elementwise MAX (the "swept" hazard zone)
+  - Across walkers: independent union 1 - prod(1 - P_i)
+  - Within one walker: weighted sum of two mode probabilities (CROSS + STAY)
+For opposite vehicles, we will model it similarly...in terms of will cross or not
+
+- p_cross = structural prior — 0.5 for pedestrians (binary cross/not), 1/3 for opposite vehicles (3 equiprobable outcomes, 1 collision). Set once, never changes. Consistent between training and inference.
+- Position + cross_distance = live signal — updated every frame from CARLA for both walkers and vehicles. A car that is 3m away has a tiny cross_distance → the LICOM cone is right on top of the ego → high risk. This is what implicitly encodes "we can now tell it's going to hit us."
+- Inference time — you'd detect the car's current position, set p_cross=1/3, and compute LICOM. Exactly mirrors training.
+
+
+The cleanest design consistent with what you already built: keep initial speed for the smear shape, but scale it by how much the cross_distance has shrunk. As the vehicle travels and cross_distance decreases, the remaining smear shortens naturally — without needing to know if it stopped vs. is still moving. The live-speed update would then only be meaningful at inference time when you have no scenario metadata at all.
+
+The current heatmap is a simple projection across the current ego trajectory. There is a slight bug when the trajectory is smaller than the length of the car.
+
+

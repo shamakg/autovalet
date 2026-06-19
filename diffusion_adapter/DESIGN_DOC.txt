@@ -21,8 +21,8 @@ Route Lanes + Lanes
 Guidance Function
     - The goal is to make the guidance function as simple as possible, but complexity may be needed in order for it to be effective
     - According to the paper, the guidance function is very important in model accuracy
-    - Guidance implementation instructions are here: /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/Diffusion-Planner/diffusion_planner/model/guidance/documentation_guidance.md
-    - An example wrapper can be shown here: /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/Diffusion-Planner/diffusion_planner/model/guidance/guidance_wrapper.py
+    - Guidance implementation instructions are here: /home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/Diffusion-Planner/diffusion_planner/model/guidance/documentation_guidance.md
+    - An example wrapper can be shown here: /home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/Diffusion-Planner/diffusion_planner/model/guidance/guidance_wrapper.py
     - Try to be creative with the guidance function to give the model the best chance at working, in order to properly benchmark it
     - This model was trained on nuplan highway data, so results won't be perfect, but the goal is to get them as near perfect as possible
 There are possibly other important inputs and parameters, so we must keep aware of this when debugging or explaining unexpected behavior

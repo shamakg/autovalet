@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 
 # Add paths
-SCRIPT_DIR = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
+SCRIPT_DIR = "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
 SIMLINGO_ROOT = os.path.join(SCRIPT_DIR, "simlingo")
 sys.path.insert(0, SIMLINGO_ROOT)
 sys.path.insert(0, os.path.join(SIMLINGO_ROOT, "team_code"))

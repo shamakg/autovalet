@@ -14,7 +14,7 @@ Run with:
 """
 
 import sys
-sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/Bench2Drive/leaderboard/team_code')
+sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/Bench2Drive/leaderboard/team_code')
 
 import pytest
 import numpy as np

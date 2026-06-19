@@ -19,8 +19,8 @@ Run with:
 """
 
 import sys, os
-sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/Bench2Drive/leaderboard/team_code')
-sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet')
+sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/Bench2Drive/leaderboard/team_code')
+sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet')
 
 import gzip, json, pathlib
 import pytest
@@ -35,7 +35,7 @@ from parking_position import parking_vehicle_locations_Town04
 pytestmark = pytest.mark.integration
 
 EPISODE_DIR = pathlib.Path(
-    '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/'
+    '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/'
     'vla_adapter/finetune/run_001/data/simlingo/run_001/'
     'routes_training/RouteScenario_parking'
 )

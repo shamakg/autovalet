@@ -69,6 +69,68 @@ CAR_HALF_W = 1.0
 SPOT_HALF_X = 2.8
 SPOT_HALF_Y = 1.4
 
+# ---------------------------------------------------------------------------
+# Model input reproduction — mirrors the real training/inference preprocessing:
+#   simlingo_training/dataloader/dataset_base.py:464-467 (bottom-crop, "cut_bottom_quarter")
+#   simlingo_training/utils/internvl2_utils.py:231 dynamic_preprocess (tiling, max_num=2)
+# Reimplemented locally (no torch/transformers) so this stays a lightweight viz script.
+# Shown pre-Normalize, since normalized tensors aren't visually meaningful.
+# ---------------------------------------------------------------------------
+MODEL_INPUT_TILE_SIZE = 448
+MODEL_INPUT_MAX_TILES = 2          # NUM_IMAGE_PATCHES in datamodule.py
+MODEL_INPUT_BOTTOM_CROP_FRAC = 4.8 / 16  # empirical value to remove the car bonnet
+
+
+def cut_bottom_quarter(img: np.ndarray) -> np.ndarray:
+    h = img.shape[0]
+    return img[:int(h - h * MODEL_INPUT_BOTTOM_CROP_FRAC), :, :]
+
+
+def _closest_aspect_ratio(aspect_ratio, target_ratios, width, height, image_size):
+    best_ratio_diff = float("inf")
+    best_ratio = (1, 1)
+    area = width * height
+    for ratio in target_ratios:
+        target_aspect_ratio = ratio[0] / ratio[1]
+        ratio_diff = abs(aspect_ratio - target_aspect_ratio)
+        if ratio_diff < best_ratio_diff:
+            best_ratio_diff = ratio_diff
+            best_ratio = ratio
+        elif ratio_diff == best_ratio_diff and area > 0.5 * image_size * image_size * ratio[0] * ratio[1]:
+            best_ratio = ratio
+    return best_ratio
+
+
+def dynamic_preprocess_tiles(image: Image.Image, image_size=MODEL_INPUT_TILE_SIZE,
+                              max_num=MODEL_INPUT_MAX_TILES):
+    """use_thumbnail=False, min_num=1 — matches the finetune config (use_global_img: False)."""
+    orig_width, orig_height = image.size
+    aspect_ratio = orig_width / orig_height
+    target_ratios = sorted(
+        {(i, j) for n in range(1, max_num + 1) for i in range(1, n + 1)
+         for j in range(1, n + 1) if 1 <= i * j <= max_num},
+        key=lambda x: x[0] * x[1],
+    )
+    tw_ratio, th_ratio = _closest_aspect_ratio(
+        aspect_ratio, target_ratios, orig_width, orig_height, image_size)
+    target_width, target_height = image_size * tw_ratio, image_size * th_ratio
+    cols = target_width // image_size
+    resized = image.resize((target_width, target_height))
+    tiles = []
+    for i in range(tw_ratio * th_ratio):
+        box = ((i % cols) * image_size, (i // cols) * image_size,
+               (i % cols + 1) * image_size, (i // cols + 1) * image_size)
+        tiles.append(resized.crop(box))
+    return tiles
+
+
+def model_input_frame(cam_img: np.ndarray) -> np.ndarray:
+    """Bottom-cropped + tiled camera frame, tiles stitched side-by-side for display —
+    this is exactly what the vision encoder receives (pre-Normalize)."""
+    cropped = cut_bottom_quarter(cam_img)
+    tiles = dynamic_preprocess_tiles(Image.fromarray(cropped))
+    return np.concatenate([np.asarray(t) for t in tiles], axis=1)
+
 
 def ego_to_world(points_ego: np.ndarray, M: np.ndarray) -> np.ndarray:
     """Transform (N,2) ego-frame points to world frame using 4×4 ego_matrix."""
@@ -211,30 +273,33 @@ def process_episode(ep_dir: pathlib.Path, fps: int, out_path: pathlib.Path):
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Layout: 3 columns when augmented camera data exists, 2 otherwise.
-    # Widths: main-cam 5, BEV 5, aug-cam 2.5 (half-height via aspect ratio)
+    # Layout: 4 columns when augmented camera data exists, 3 otherwise.
+    # Widths: main-cam 4, BEV 4, model-input 4, aug-cam 2 (half-height via aspect ratio)
     if has_aug:
-        fig = plt.figure(figsize=(16, 6), facecolor="#111122")
-        gs  = fig.add_gridspec(2, 3, width_ratios=[4, 4, 2],
-                               left=0.03, right=0.98, top=0.93, bottom=0.07,
+        fig = plt.figure(figsize=(20, 6), facecolor="#111122")
+        gs  = fig.add_gridspec(2, 4, width_ratios=[4, 4, 4, 2],
+                               left=0.025, right=0.985, top=0.93, bottom=0.07,
                                wspace=0.06, hspace=0.3)
         ax_cam = fig.add_subplot(gs[:, 0])   # main cam — full height
         ax_bev = fig.add_subplot(gs[:, 1])   # BEV — full height
-        ax_aug = fig.add_subplot(gs[0, 2])   # aug cam — top half of right column
-        ax_aug_info = fig.add_subplot(gs[1, 2])  # aug metadata — bottom half
+        ax_model_in = fig.add_subplot(gs[:, 2])  # model input tiles — full height
+        ax_aug = fig.add_subplot(gs[0, 3])   # aug cam — top half of right column
+        ax_aug_info = fig.add_subplot(gs[1, 3])  # aug metadata — bottom half
         ax_aug.set_facecolor("black")
         ax_aug_info.set_facecolor("#111122")
         ax_aug_info.axis("off")
     else:
-        fig = plt.figure(figsize=(16, 6), facecolor="#111122")
-        fig.subplots_adjust(left=0.04, right=0.98, top=0.93, bottom=0.07,
+        fig = plt.figure(figsize=(20, 6), facecolor="#111122")
+        fig.subplots_adjust(left=0.03, right=0.98, top=0.93, bottom=0.07,
                             wspace=0.06)
-        ax_cam = fig.add_subplot(1, 2, 1)
-        ax_bev = fig.add_subplot(1, 2, 2)
+        ax_cam = fig.add_subplot(1, 3, 1)
+        ax_bev = fig.add_subplot(1, 3, 2)
+        ax_model_in = fig.add_subplot(1, 3, 3)
         ax_aug = None
         ax_aug_info = None
 
     ax_cam.set_facecolor("black")
+    ax_model_in.set_facecolor("black")
 
     writer = None
 
@@ -257,6 +322,13 @@ def process_episode(ep_dir: pathlib.Path, fps: int, out_path: pathlib.Path):
                  frame_num, speed, ep_type)
         ax_bev.set_title("Parking lot BEV (world frame)", fontsize=9,
                          color="white", pad=3)
+
+        # Model input panel — exactly what the vision encoder receives
+        ax_model_in.clear()
+        ax_model_in.imshow(model_input_frame(cam_img))
+        ax_model_in.axis("off")
+        ax_model_in.set_title("Model input (encoder tiles, pre-normalize)",
+                              fontsize=9, color="white", pad=3)
 
         # Augmented camera panel
         if ax_aug is not None:
@@ -299,7 +371,7 @@ def process_episode(ep_dir: pathlib.Path, fps: int, out_path: pathlib.Path):
 
 def main():
     default_root = pathlib.Path(
-        "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet"
+        "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet"
         "/vla_adapter/finetune/run_001/data/simlingo/parking_ft"
         "/routes_training/RouteScenario_parking"
     )

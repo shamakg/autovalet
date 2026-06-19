@@ -43,16 +43,16 @@ import numpy as np
 
 
 REPO_ROOT = pathlib.Path(
-    "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo"
+    "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo"
 ).resolve()
 
 DEFAULT_DATA = pathlib.Path(
-    "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
+    "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
     "/finetune/run_001/data/simlingo/parking_ft/routes_training/RouteScenario_parking"
 )
 
 DEFAULT_OUT = pathlib.Path(
-    "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
+    "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
     "/finetune/parking_buckets_v1"
 )
 

@@ -12,9 +12,9 @@ Usage in benchmark:
 """
 
 import sys
-sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet')
-sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter')
-sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/nuplan-devkit')
+sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet')
+sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter')
+sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/nuplan-devkit')
 
 import carla
 import numpy as np
@@ -24,8 +24,8 @@ import diff_adapter as da
 from utils.agent_process import AgentHistoryBuffer, AgentState
 from utils.coord_utils import carla_transform_to_standard, carla_velocity_to_standard
 
-DIFFUSION_CKPT = '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/model.pth'
-DIFFUSION_ARGS = '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/args.json'
+DIFFUSION_CKPT = '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/model.pth'
+DIFFUSION_ARGS = '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/checkpoints/args.json'
 
 TARGET_SPEED       = 1.5   # m/s
 MAX_LOOKAHEAD_DIST = 12.0  # pure pursuit: use farthest trajectory waypoint within this range

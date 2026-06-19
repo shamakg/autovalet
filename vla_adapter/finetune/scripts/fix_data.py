@@ -20,13 +20,13 @@ import sys
 import numpy as np
 import ujson
 
-sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet')
+sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet')
 from parking_position import parking_vehicle_locations_Town04 as SPOTS
 
-sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo')
+sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo')
 from team_code.transfuser_utils import inverse_conversion_2d
 
-_TEMPLATE_PATH = '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/data/augmented_templates/lmdrive.json'
+_TEMPLATE_PATH = '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/data/augmented_templates/lmdrive.json'
 with open(_TEMPLATE_PATH) as _f:
     _CMD_TEMPLATES = json.load(_f)
 
@@ -45,7 +45,7 @@ _REVERSE_TEMPLATES = {
     ],
 }
 
-RUN_DIR = pathlib.Path("/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune/run_001")
+RUN_DIR = pathlib.Path("/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune/run_001")
 EPISODE_BASE = RUN_DIR / "data/simlingo/parking_ft/routes_training/RouteScenario_parking"
 
 

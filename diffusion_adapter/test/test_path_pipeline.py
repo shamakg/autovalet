@@ -9,7 +9,7 @@ Tests each stage independently so we can pinpoint exactly where the path collaps
   Stage 4: project_world_to_topdown maps to distinct pixels
 
 Run with:
-    /home/sumesh/envs/simlingo/bin/python test/test_path_pipeline.py
+    /home/shamakg/envs/simlingo/bin/python test/test_path_pipeline.py
 """
 
 import sys, os
@@ -21,9 +21,9 @@ _ADAPTER_ROOT = os.path.dirname(_HERE)
 _AUTOVALET    = os.path.dirname(_ADAPTER_ROOT)
 _NUPLAN_ROOT  = os.path.join(_ADAPTER_ROOT, "nuplan-devkit")
 _DP_ROOT      = os.path.join(_ADAPTER_ROOT, "Diffusion-Planner")
-_CARLA_ROOT   = "/home/sumesh/opt/carla/PythonAPI/carla"
-_SCENARIO_ROOT= "/home/sumesh/carla_garage/scenario_runner"
-_LB_ROOT      = "/home/sumesh/carla_garage/leaderboard"
+_CARLA_ROOT   = "/home/shamakg/opt/carla/PythonAPI/carla"
+_SCENARIO_ROOT= "/home/shamakg/carla_garage/scenario_runner"
+_LB_ROOT      = "/home/shamakg/carla_garage/leaderboard"
 
 for _p in [_CARLA_ROOT, _SCENARIO_ROOT, _LB_ROOT,
            _HERE, _AUTOVALET, _ADAPTER_ROOT, _NUPLAN_ROOT, _DP_ROOT]:

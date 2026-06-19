@@ -1,0 +1,80 @@
+{
+  "all": {
+    "total": 32503,
+    "freeroll": 15599,
+    "ped": 13345,
+    "door": 3559
+  },
+  "approach": {
+    "total": 10765,
+    "freeroll": 3551,
+    "ped": 5431,
+    "door": 1783
+  },
+  "correction_maneuver": {
+    "total": 3432,
+    "freeroll": 2268,
+    "ped": 1107,
+    "door": 57
+  },
+  "final_turn": {
+    "total": 9881,
+    "freeroll": 6406,
+    "ped": 2901,
+    "door": 574
+  },
+  "into_spot": {
+    "total": 5562,
+    "freeroll": 3157,
+    "ped": 1853,
+    "door": 552
+  },
+  "pre_turn_door": {
+    "total": 399,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 399
+  },
+  "pre_turn_freeroll": {
+    "total": 1832,
+    "freeroll": 1832,
+    "ped": 0,
+    "door": 0
+  },
+  "pre_turn_ped": {
+    "total": 1707,
+    "freeroll": 0,
+    "ped": 1707,
+    "door": 0
+  },
+  "recovery_park": {
+    "total": 6691,
+    "freeroll": 3906,
+    "ped": 2785,
+    "door": 0
+  },
+  "swing_out_door": {
+    "total": 941,
+    "freeroll": 0,
+    "ped": 0,
+    "door": 941
+  },
+  "swing_out_freeroll": {
+    "total": 4075,
+    "freeroll": 4075,
+    "ped": 0,
+    "door": 0
+  },
+  "swing_out_ped": {
+    "total": 3766,
+    "freeroll": 0,
+    "ped": 3766,
+    "door": 0
+  },
+  "turn_exec_freeroll": {
+    "total": 7849,
+    "freeroll": 7849,
+    "ped": 0,
+    "door": 0
+  }
+}
