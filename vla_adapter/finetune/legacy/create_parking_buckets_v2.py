@@ -27,15 +27,15 @@ import pathlib
 import pickle
 
 REPO_ROOT = pathlib.Path(
-    "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo"
+    "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo"
 ).resolve()
 
 DEFAULT_V1  = pathlib.Path(
-    "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
+    "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
     "/finetune/parking_buckets_v1"
 )
 DEFAULT_OUT = pathlib.Path(
-    "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
+    "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
     "/finetune/parking_buckets_v2"
 )
 
