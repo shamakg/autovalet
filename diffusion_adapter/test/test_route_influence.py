@@ -14,7 +14,7 @@ This test investigates:
   5. What's the right GOAL_SCALE to overcome the circular prior?
 
 Run with:
-    /home/shamakg/envs/simlingo/bin/python test/test_route_influence.py
+    /home/sumesh/envs/simlingo/bin/python test/test_route_influence.py
 """
 
 import sys, os

@@ -33,7 +33,7 @@ if _HERE not in sys.path:
 
 from crossing_gmm import render_route_risk_grid, heatmap_on_topdown
 from config import (HORIZON_SCALE, ROUTE_CORRIDOR_HALF_WIDTH,
-                    TOPDOWN_HEIGHT, TOPDOWN_SIZE, TOPDOWN_FOV)
+                    TOPDOWN_HEIGHT, TOPDOWN_SIZE, TOPDOWN_FOV, RISK_GRID_SIZE)
 
 TOPDOWN_HALF = TOPDOWN_HEIGHT * np.tan(np.deg2rad(TOPDOWN_FOV / 2.0))
 TOPDOWN_RES = 1.0   # matches collect_data_topdown
@@ -42,6 +42,23 @@ _DEFAULT_ROOT = (
     pathlib.Path(_HERE) / "run_topdown_001" / "data" / "simlingo" / "parking_ft"
     / "routes_training" / "RouteScenario_parking"
 )
+
+
+# Regenerable-from-(topdown/ + measurements/ + boxes/) cache dirs. Safe to delete
+# and rebuild with `rebake.py --all`; reclaim them when idle with --prune-cache.
+_DERIVED_CACHE_DIRS = ("topdown_heatmap", "heatmap", "risk_grid")
+
+
+def prune_cache(ep):
+    ep = pathlib.Path(ep)
+    if not (ep / "topdown").exists():
+        print(f"  {ep.name}: SKIP prune -- no topdown/ to rebake from "
+              "(would be unrecoverable)")
+        return
+    import shutil
+    for d in _DERIVED_CACHE_DIRS:
+        shutil.rmtree(ep / d, ignore_errors=True)
+    print(f"  {ep.name}: pruned {', '.join(_DERIVED_CACHE_DIRS)} (rebake to rebuild)")
 
 
 def rebake_episode(ep, reuse_heatmaps=False):
@@ -79,11 +96,27 @@ def rebake_episode(ep, reuse_heatmaps=False):
         mat = np.array(m["ego_matrix"])
         ego_xy = mat[:2, 3]
         yaw = float(np.arctan2(mat[1, 0], mat[0, 0]))
+        # Static parked-car boxes (ego frame) so rebake matches fresh collection.
+        static_boxes = None
+        bp = ep / "boxes" / f"{stem}.json.gz"
+        if bp.exists():
+            with gzip.open(bp, "rt") as bf:
+                static_boxes = [b for b in json.load(bf) if b.get("class") == "car"]
         arr = render_route_risk_grid(
             obstacles, ego_xy, yaw, m.get("route") or None,
             TOPDOWN_SIZE, TOPDOWN_HALF, ROUTE_CORRIDOR_HALF_WIDTH,
-            resolution=TOPDOWN_RES, horizon_scale=HORIZON_SCALE)
+            resolution=TOPDOWN_RES, horizon_scale=HORIZON_SCALE,
+            window='cone', ego_speed=float(m.get('speed', 0.0)),
+            static_boxes=static_boxes)
         Image.fromarray(arr).save(hm_dir / f"{stem}.png")
+        # COLLISION-LOSS: un-masked risk grid for the training collision loss.
+        # DYNAMIC obstacles only (no static_boxes) -- keeps the loss teacher clean.
+        risk_full = render_route_risk_grid(
+            obstacles, ego_xy, yaw, None,
+            RISK_GRID_SIZE, TOPDOWN_HALF, ROUTE_CORRIDOR_HALF_WIDTH,
+            resolution=TOPDOWN_RES, horizon_scale=HORIZON_SCALE)
+        (ep / "risk_grid").mkdir(exist_ok=True)
+        Image.fromarray(risk_full).save(ep / "risk_grid" / f"{stem}.png")
         tp = ep / "topdown" / f"{stem}.jpg"
         if tp.exists():
             td = np.array(Image.open(tp).convert("RGB"))
@@ -100,14 +133,23 @@ def main():
     ap.add_argument("--data-dir", type=pathlib.Path, default=_DEFAULT_ROOT)
     ap.add_argument("--reuse-heatmaps", action="store_true",
                     help="build topdown_heatmap/ from existing heatmap/ PNGs (no recompute)")
+    ap.add_argument("--prune-cache", action="store_true",
+                    help="DELETE the regenerable derived dirs (topdown_heatmap/, "
+                         "heatmap/, risk_grid/) to reclaim storage when idle. Only "
+                         "acts on episodes that still have topdown/ to rebake from. "
+                         "Rebuild later with --all.")
     args = ap.parse_args()
+
+    action = prune_cache if args.prune_cache else (
+        lambda ep: rebake_episode(ep, reuse_heatmaps=args.reuse_heatmaps))
 
     if args.all:
         eps = sorted(p for p in glob.glob(str(args.data_dir / "Town04_*"))
                      if os.path.isdir(p))
-        print(f"Rebaking {len(eps)} episodes in {args.data_dir}")
+        verb = "Pruning cache for" if args.prune_cache else "Rebaking"
+        print(f"{verb} {len(eps)} episodes in {args.data_dir}")
         for ep in eps:
-            rebake_episode(ep, reuse_heatmaps=args.reuse_heatmaps)
+            action(ep)
     else:
         if args.episode is None:
             sys.exit("Specify an episode or --all")
@@ -116,7 +158,7 @@ def main():
             ep = args.data_dir / args.episode
         if not ep.exists():
             sys.exit(f"Episode not found: {args.episode}")
-        rebake_episode(ep, reuse_heatmaps=args.reuse_heatmaps)
+        action(ep)
 
 
 if __name__ == "__main__":

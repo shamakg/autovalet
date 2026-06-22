@@ -9,7 +9,7 @@ Tests (all with simlingo Python, GPU):
   5. Does GOAL_SCALE guidance change the output direction?
 
 Run from diffusion_adapter dir:
-    /home/shamakg/envs/simlingo/bin/python test/test_model_live.py
+    /home/sumesh/envs/simlingo/bin/python test/test_model_live.py
 """
 
 import sys, os

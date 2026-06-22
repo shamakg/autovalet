@@ -32,7 +32,9 @@ for _p in (_COLLISION_PROBS, _VLA_ADAPTER):
 
 from agent_interface import SimLingoAdapter
 from crossing_gmm import render_route_risk_grid, heatmap_on_topdown
-from config import HORIZON_SCALE as HEATMAP_HORIZON, ROUTE_CORRIDOR_HALF_WIDTH, TOPDOWN_SIZE
+from config import (HORIZON_SCALE as HEATMAP_HORIZON, ROUTE_CORRIDOR_HALF_WIDTH,
+                    TOPDOWN_SIZE, STATIC_OBSTACLES_ENABLED)
+from transfuser_utils import inverse_conversion_2d
 # Reuse the data-collection helpers as-is instead of re-deriving them: same
 # camera setup, same grid geometry, same live obstacle-pose pairing logic.
 from collect_data_topdown import setup_topdown_camera, _actor_live_poses, TOPDOWN_HALF, TOPDOWN_RES
@@ -94,6 +96,33 @@ class HeatmapSimLingoAdapter(SimLingoAdapter):
             self._obstacles_gmm_base = base
         return _actor_live_poses(scenario, self._obstacles_gmm_base)
 
+    def _static_boxes_live(self):
+        """Ego-frame parked-car boxes from the running scenario, matching exactly
+        what collect_data.save_boxes writes (same inverse_conversion_2d frame), so
+        the live static-obstacle heatmap == the offline one."""
+        scenario = self.parking_scenario
+        if not STATIC_OBSTACLES_ENABLED or scenario is None:
+            return None
+        tf = self.hero_actor.get_transform()
+        ego_yaw = np.deg2rad(tf.rotation.yaw)
+        ego_xy = np.array([tf.location.x, tf.location.y])
+        boxes = []
+        for parked in getattr(scenario, 'parked_cars', []):
+            if not parked.is_alive:
+                continue
+            pt = parked.get_transform()
+            ext = parked.bounding_box.extent
+            rel = inverse_conversion_2d(
+                np.array([pt.location.x, pt.location.y]), ego_xy, ego_yaw)
+            boxes.append({
+                'class': 'car',
+                'extent': [ext.x, ext.y, ext.z],
+                'position': [float(rel[0]), float(rel[1])],
+                'yaw': float(np.deg2rad(pt.rotation.yaw) - ego_yaw),
+                'speed': 0.0,
+            })
+        return boxes
+
     def _render_risk(self):
         """Corridor-clipped risk grid via the shared render_route_risk_grid (same
         function used by collect_data_topdown._compute_heatmaps, so the offline
@@ -103,13 +132,17 @@ class HeatmapSimLingoAdapter(SimLingoAdapter):
         tf = self.hero_actor.get_transform()
         ego_xy = np.array([tf.location.x, tf.location.y])
         yaw = np.deg2rad(tf.rotation.yaw)
+        vel = self.hero_actor.get_velocity()
+        ego_speed = float(np.hypot(vel.x, vel.y))
 
         route = getattr(self, 'latest_pred_route', None)
         route_pts = ([[0.0, 0.0]] + np.asarray(route).tolist()) if route is not None else None
         return render_route_risk_grid(
             self._obstacles_gmm_live(), ego_xy, yaw, route_pts,
             TOPDOWN_SIZE, TOPDOWN_HALF, ROUTE_CORRIDOR_HALF_WIDTH,
-            resolution=TOPDOWN_RES, horizon_scale=HEATMAP_HORIZON)
+            resolution=TOPDOWN_RES, horizon_scale=HEATMAP_HORIZON,
+            window='cone', ego_speed=ego_speed,
+            static_boxes=self._static_boxes_live())
 
     def _augment_input_data(self, input_data):
         """Inject the topdown collision heatmap as a separate model view.

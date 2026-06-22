@@ -4,22 +4,22 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 # Activate environment
-source /home/shamakg/envs/simlingo/bin/activate
+source /home/sumesh/envs/simlingo/bin/activate
 
 # Paths
-export CARLA_ROOT=/home/shamakg/opt/carla
-export SCENARIO_RUNNER_ROOT=/home/shamakg/carla_garage/scenario_runner
-export LEADERBOARD_ROOT=/home/shamakg/carla_garage/leaderboard
+export CARLA_ROOT=/home/sumesh/opt/carla
+export SCENARIO_RUNNER_ROOT=/home/sumesh/carla_garage/scenario_runner
+export LEADERBOARD_ROOT=/home/sumesh/carla_garage/leaderboard
 export SIMLINGO_ROOT=$SCRIPT_DIR/simlingo
 
 # HuggingFace cache — point to local pretrained dir so models aren't re-downloaded
-export HUGGINGFACE_HUB_CACHE='/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/pretrained'
-export TRANSFORMERS_CACHE='/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/pretrained'
-export HF_HOME='/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/pretrained'
+export HUGGINGFACE_HUB_CACHE='/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/pretrained'
+export TRANSFORMERS_CACHE='/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/pretrained'
+export HF_HOME='/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/pretrained'
 
 # PYTHONPATH
 # Add carla agents, team_code, and simlingo base
-export PYTHONPATH="/home/shamakg/opt/carla/PythonAPI/carla:$SCENARIO_RUNNER_ROOT:$LEADERBOARD_ROOT:$SIMLINGO_ROOT:$SIMLINGO_ROOT/team_code:$SCRIPT_DIR:$PYTHONPATH"
+export PYTHONPATH="/home/sumesh/opt/carla/PythonAPI/carla:$SCENARIO_RUNNER_ROOT:$LEADERBOARD_ROOT:$SIMLINGO_ROOT:$SIMLINGO_ROOT/team_code:$SCRIPT_DIR:$PYTHONPATH"
 
 # Run baseline (0ms)
 # python3 "$SCRIPT_DIR/benchmark_latency.py" --no-comparison --latency 0

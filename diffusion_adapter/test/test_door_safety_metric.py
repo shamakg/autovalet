@@ -4,8 +4,8 @@ import numpy as np
 import carla
 
 # Add paths to imports
-sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet')
-sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter')
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet')
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter')
 
 from testbed.v2_experiment_utils import load_client, town04_load
 

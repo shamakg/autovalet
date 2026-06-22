@@ -12,9 +12,9 @@ import pytest
 
 # ── path setup ───────────────────────────────────────────────────────────────
 AUTOVALET = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CARLA_PYTHON = '/home/shamakg/opt/carla/PythonAPI/carla'
-SCENARIO_RUNNER = '/home/shamakg/carla_garage/scenario_runner'
-LEADERBOARD = '/home/shamakg/carla_garage/leaderboard'
+CARLA_PYTHON = '/home/sumesh/opt/carla/PythonAPI/carla'
+SCENARIO_RUNNER = '/home/sumesh/carla_garage/scenario_runner'
+LEADERBOARD = '/home/sumesh/carla_garage/leaderboard'
 
 for p in [AUTOVALET, CARLA_PYTHON, SCENARIO_RUNNER, LEADERBOARD]:
     if p not in sys.path:

@@ -376,7 +376,7 @@ def process_episode(ep_dir: pathlib.Path, fps: int, out_path: pathlib.Path):
 
 def main():
     default_root = pathlib.Path(
-        "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet"
+        "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet"
         "/vla_adapter/finetune/run_001/data/simlingo/parking_ft"
         "/routes_training/RouteScenario_parking"
     )

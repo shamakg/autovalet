@@ -13,17 +13,17 @@
 set -e
 
 # ── paths ─────────────────────────────────────────────────────────────────────
-COLLISION_PROBS=/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/collision_probs
-FINETUNE_DIR=/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune
+COLLISION_PROBS=/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/collision_probs
+FINETUNE_DIR=/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune
 OUTPUT_DIR=${OUTPUT_DIR:-${COLLISION_PROBS}/run_topdown_001}
 
 # ── environment ───────────────────────────────────────────────────────────────
-export CARLA_ROOT=/home/shamakg/opt/carla/PythonAPI/carla
-export WORK_DIR=/home/shamakg/carla_garage
+export CARLA_ROOT=/home/sumesh/opt/carla/PythonAPI/carla
+export WORK_DIR=/home/sumesh/carla_garage
 export CARLA_PORT=2000
 export SCENARIO_RUNNER_ROOT=${WORK_DIR}/scenario_runner
 export LEADERBOARD_ROOT=${WORK_DIR}/leaderboard
-export SIMLINGO_ROOT=/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo
+export SIMLINGO_ROOT=/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo
 export SIMLINGO_TEAM_CODE=${SIMLINGO_ROOT}/team_code
 export SIMLINGO_TRAINING=${SIMLINGO_ROOT}
 export PYTHONPATH="${CARLA_ROOT}:${SCENARIO_RUNNER_ROOT}:${LEADERBOARD_ROOT}:${SIMLINGO_TRAINING}:${SIMLINGO_TEAM_CODE}:${PYTHONPATH}"
@@ -31,9 +31,9 @@ export HOST=localhost
 export OUTPUT_DIR
 
 # source /opt/ros/humble/setup.bash
-source /home/shamakg/envs/simlingo/bin/activate
+source /home/sumesh/envs/simlingo/bin/activate
 
-PYTHON=/home/shamakg/envs/simlingo/bin/python
+PYTHON=/home/sumesh/envs/simlingo/bin/python
 
 # ── CARLA cleanup (runs on exit for any reason) ───────────────────────────────
 CARLA_PID=""
@@ -50,7 +50,7 @@ trap cleanup EXIT INT TERM
 
 # ── 1. start CARLA ────────────────────────────────────────────────────────────
 echo "[1/5] Starting CARLA (port ${CARLA_PORT})..."
-/home/shamakg/opt/carla/CarlaUE4.sh -RenderOffScreen -carla-port=${CARLA_PORT} &
+/home/sumesh/opt/carla/CarlaUE4.sh -RenderOffScreen -carla-port=${CARLA_PORT} &
 CARLA_PID=$!
 echo "      CARLA PID: ${CARLA_PID}"
 echo "      Waiting 20s for CARLA to initialise..."
@@ -70,16 +70,12 @@ pkill -f "CarlaUE4-Linux-Shipping" 2>/dev/null || true
 pkill -f "CarlaUE4" 2>/dev/null || true
 echo "      CARLA stopped."
 
-# ── 4. rebuild parking buckets ────────────────────────────────────────────────
-echo "[4/5] Rebuilding parking buckets (v1 -> v3)..."
-${PYTHON} "${FINETUNE_DIR}/create_parking_buckets.py"
-${PYTHON} "${FINETUNE_DIR}/create_parking_buckets_v3.py"
-echo "      Bucket distribution:"
-cat "${FINETUNE_DIR}/parking_buckets_v3/buckets_stats.json"
-echo
-
-# ── 5. train ──────────────────────────────────────────────────────────────────
-echo "[5/5] Starting training..."
-bash "${COLLISION_PROBS}/train_topdown.sh"
+# ── 4. build buckets + train with the collision loss ──────────────────────────
+# Fresh collection already baked the cone heatmap + risk_grid/ (the BEV camera was
+# present at collection time), so REBAKE=0. rebake_and_train.sh builds buckets with
+# the single-pass builder and trains with collision_loss_weight enabled. Override
+# the weight via env, e.g. COLLISION_WEIGHT=1.0 bash collect_and_train_topdown.sh
+echo "[4/4] Building buckets + training (collision loss enabled)..."
+REBAKE=0 bash "${COLLISION_PROBS}/rebake_and_train.sh"
 
 echo "Done."

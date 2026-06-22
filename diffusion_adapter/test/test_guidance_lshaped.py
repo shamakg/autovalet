@@ -8,7 +8,7 @@ Three tests, no CARLA, no GPU required:
      the diffusion model will be guided away from the diagonal shortcut.
 
 Run with:
-    /home/shamakg/envs/simlingo/bin/python test/test_guidance_lshaped.py
+    /home/sumesh/envs/simlingo/bin/python test/test_guidance_lshaped.py
 """
 
 import sys, os
@@ -21,9 +21,9 @@ _AUTOVALET    = os.path.dirname(_ADAPTER_ROOT)
 _NUPLAN_ROOT  = os.path.join(_ADAPTER_ROOT, "nuplan-devkit")
 _DP_ROOT      = os.path.join(_ADAPTER_ROOT, "Diffusion-Planner")
 
-_CARLA_ROOT    = "/home/shamakg/opt/carla/PythonAPI/carla"
-_SCENARIO_ROOT = "/home/shamakg/carla_garage/scenario_runner"
-_LB_ROOT       = "/home/shamakg/carla_garage/leaderboard"
+_CARLA_ROOT    = "/home/sumesh/opt/carla/PythonAPI/carla"
+_SCENARIO_ROOT = "/home/sumesh/carla_garage/scenario_runner"
+_LB_ROOT       = "/home/sumesh/carla_garage/leaderboard"
 
 for _p in [_CARLA_ROOT, _SCENARIO_ROOT, _LB_ROOT,
            _HERE, _AUTOVALET, _ADAPTER_ROOT, _NUPLAN_ROOT, _DP_ROOT]:

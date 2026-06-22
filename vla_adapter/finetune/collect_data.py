@@ -441,7 +441,7 @@ if __name__ == '__main__':
     from testbed.v2_experiment_utils import load_client, town04_load, town04_spectator_bev
     from srunner.scenariomanager.carla_data_provider import CarlaDataProvider
 
-    OUTPUT = "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune/run_001/"
+    OUTPUT = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune/run_001/"
 
     client = load_client()
     world = town04_load(client)

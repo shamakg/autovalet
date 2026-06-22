@@ -18,8 +18,8 @@ fi
 
 OUT_PT="${CKPT_DIR%.ckpt}_fp32.pt"
 
-SIMLINGO=/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo
-source /home/shamakg/envs/simlingo/bin/activate
+SIMLINGO=/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo
+source /home/sumesh/envs/simlingo/bin/activate
 export PYTHONPATH="${SIMLINGO}:${PYTHONPATH}"
 
 echo "Converting ${CKPT_DIR} → ${OUT_PT}"

@@ -25,8 +25,8 @@ import pathlib
 import signal
 import sys
 
-sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet')
-sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter')
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet')
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter')
 
 import numpy as np
 import torch
@@ -44,7 +44,7 @@ from v2_experiment import SCENARIOS
 from team_code.transfuser_utils import inverse_conversion_2d, preprocess_compass
 
 _DEFAULT_DATA_DIR = pathlib.Path(
-    '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter'
+    '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter'
     '/finetune/run_001/data/simlingo/parking_ft/routes_training/RouteScenario_parking'
 )
 

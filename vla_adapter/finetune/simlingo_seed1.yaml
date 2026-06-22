@@ -10,6 +10,8 @@ model:
   lr: 3e-5
   predict_route_as_wps: True
   speed_wps_mode: 2d
+  collision_loss_weight: 3.0
+  collision_topdown_half: 18.0   # only if you want to override the 18.0 default too
   language_model:
     variant: 'OpenGVLab/InternVL2-1B'
     lora: True
@@ -20,7 +22,7 @@ model:
     variant: 'OpenGVLab/InternVL2-1B'
 
 data_module:
-  batch_size: 4 # unfortunately don't have access to the SLURM cluster ;(
+  batch_size: 3 # unfortunately don't have access to the SLURM cluster ;(
   num_workers: 4
   # dreamer_dataset: null
   train_partitions:
@@ -109,7 +111,7 @@ seed: 9876
 name: parking_ft_v2
 resume: false
 
-checkpoint: /home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt
+checkpoint: /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt
 
 hydra:
   run:

@@ -9,7 +9,7 @@ Runs the full DPM sampler with and without guidance to confirm:
   4. No NaN/Inf introduced by guidance
 
 Run with:
-    /home/shamakg/envs/simlingo/bin/python test/test_guidance.py
+    /home/sumesh/envs/simlingo/bin/python test/test_guidance.py
 """
 
 import sys, os
@@ -23,9 +23,9 @@ _NUPLAN_ROOT  = os.path.join(_ADAPTER_ROOT, "nuplan-devkit")
 _DP_ROOT      = os.path.join(_ADAPTER_ROOT, "Diffusion-Planner")
 
 # Paths from run_test.sh
-_CARLA_ROOT    = "/home/shamakg/opt/carla/PythonAPI/carla"
-_SCENARIO_ROOT = "/home/shamakg/carla_garage/scenario_runner"
-_LB_ROOT       = "/home/shamakg/carla_garage/leaderboard"
+_CARLA_ROOT    = "/home/sumesh/opt/carla/PythonAPI/carla"
+_SCENARIO_ROOT = "/home/sumesh/carla_garage/scenario_runner"
+_LB_ROOT       = "/home/sumesh/carla_garage/leaderboard"
 
 for _p in [_CARLA_ROOT, _SCENARIO_ROOT, _LB_ROOT,
            _HERE, _AUTOVALET, _ADAPTER_ROOT, _NUPLAN_ROOT, _DP_ROOT]:

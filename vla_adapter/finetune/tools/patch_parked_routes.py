@@ -28,15 +28,15 @@ import argparse, gzip, json, pathlib, pickle, collections
 import numpy as np
 
 REPO_ROOT = pathlib.Path(
-    "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo"
+    "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo"
 ).resolve()
 
 DEFAULT_DATA = pathlib.Path(
-    "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
+    "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
     "/finetune/run_001/data/simlingo/parking_ft/routes_training/RouteScenario_parking"
 )
 DEFAULT_V2 = pathlib.Path(
-    "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
+    "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter"
     "/finetune/parking_buckets_v2"
 )
 

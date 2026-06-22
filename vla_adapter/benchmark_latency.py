@@ -8,7 +8,7 @@ import time
 from datetime import datetime
 from enum import Enum
 
-sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet')
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet')
 
 import carla
 import matplotlib.pyplot as plt
@@ -136,7 +136,7 @@ def calculate_min_distance_to_door(ego_actor, door_vehicle):
 # ---------------------------------------------------------------
 
 checkpoint_path = (
-    '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/'
+    '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/'
     'vla_adapter/model/checkpoints/epoch=013.ckpt/pytorch_model.pt'
 )
 # ---------------------------------------------------------------

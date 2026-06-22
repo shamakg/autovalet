@@ -35,33 +35,49 @@ from generate_heatmap import licom_risk, colorize
 from config import (
     HORIZON_SCALE, TIME_HORIZON, N_TIME,
     SIGMA_LON, SIGMA_LAT0, CONE_RATE, STAY_SIGMA,
-    EGO_HALF_LENGTH, CORRIDOR_SAFE_FLOOR,
+    EGO_HALF_LENGTH, EGO_HALF_WIDTH, CORRIDOR_SAFE_FLOOR,
+    VEHICLE_WHEELBASE, MAX_STEER_DEG, CONE_REACH, CONE_HALF_ANGLE_DEG,
+    STATIC_EGO_INFLATE_M, STATIC_SPEED_EPS,
 )
 
 
 # ---------------------------------------------------------------------------
-# Soft green → red colormap (replaces JET).
-# risk=0.0 → soft green  RGB (60, 180, 60)
-# risk=0.5 → amber       RGB (220, 180, 0)
-# risk=1.0 → soft red    RGB (220, 30,  30)
+# Vibrant green → red colormap (replaces JET).
+# risk=0.0 → vibrant green RGB (40, 210, 40)
+# risk=0.5 → amber         RGB (220, 200, 0)
+# risk=1.0 → soft red      RGB (220, 30,  30)
 # ---------------------------------------------------------------------------
 
+# Risk at/below this is "safe" and renders flat green; everything above it is
+# the warm warning ramp (yellow -> orange -> red). Keep it just above the
+# corridor's CORRIDOR_SAFE_FLOOR (0.10) so the safe corridor stays green.
+_GREEN_THR = 0.15
+
+
 def _build_soft_rg_lut():
-    """256-entry BGR lookup table: soft green → amber → soft red."""
+    """256-entry BGR lookup table: a flat-green SAFE band below _GREEN_THR, then
+    a single warm warning ramp yellow -> orange -> red above it.
+
+    Only one hard cut, green -> yellow, at the threshold. The warm ramp is one
+    hue family (red pinned high, green channel falling) so it gradates smoothly
+    yellow->orange->red without the muddy cross-hue blending we had before.
+        risk <= _GREEN_THR  -> green   (safe)
+        risk  > _GREEN_THR  -> yellow -> orange -> red, by intensity
+    """
     lut = np.zeros((256, 1, 3), dtype=np.uint8)
     for i in range(256):
         t = i / 255.0
-        if t < 0.5:
-            s = t / 0.5
-            r = int(60  + s * (220 - 60))    # 60  → 220
-            g = int(110 + s * (200 - 110))   # 110 → 200  (darker green, brightens into amber peak)
-            b = int(60  + s * (0   - 60))    # 60  → 0
+        if t <= _GREEN_THR:                # SAFE -> flat vivid green
+            r, g, b = 0, 200, 0
         else:
-            s = (t - 0.5) / 0.5
-            r = int(220)                      # stays 220
-            g = int(200 + s * (30 - 200))    # 200 → 30  (amber peak, falls off to red)
-            b = int(0)                        # stays 0
-        lut[i, 0] = (b, g, r)               # OpenCV uses BGR
+            s = (t - _GREEN_THR) / (1.0 - _GREEN_THR)   # 0..1 across the warm ramp
+            if s < 0.5:                    # yellow -> orange
+                u = s / 0.5
+                r, g, b = 255, int(235 - u * (235 - 140)), 0
+            else:                          # orange -> red
+                u = (s - 0.5) / 0.5
+                r, g, b = int(255 - u * (255 - 205)), int(140 * (1.0 - u)), 0
+        lut[i, 0] = (b, g, r)              # OpenCV uses BGR
     return lut
 
 _SOFT_RG_LUT = _build_soft_rg_lut()
@@ -240,6 +256,36 @@ def route_corridor_mask(route_pts, half_width, topdown_half, size):
     return min_dist_sq <= hw_sq
 
 
+def reachable_cone_mask(ego_speed, topdown_half, size,
+                        half_angle_deg=CONE_HALF_ANGLE_DEG,
+                        reach=CONE_REACH, base_half=EGO_HALF_WIDTH):
+    """Boolean mask (size×size) of the ego's forward REACHABLE fan -- the cone of
+    positions it could drive to, in the same forward-up ego image coords as
+    route_corridor_mask. Symmetric in x (a forward + reverse bow-tie) since
+    parking reverses (into_spot/recovery/correction).
+
+    `reach` is a FIXED longitudinal distance each way (no speed dependence);
+    `ego_speed` is accepted but unused (kept for call-site stability).
+
+    Geometry: a true cone. The lateral half-width opens LINEARLY with downrange
+    distance, hw(x) = base_half + tan(half_angle) * |x|, giving straight angled
+    sides from a vehicle-wide base at the bumper. (The earlier min-turn-radius
+    arc, r_min - sqrt(r_min² - x²), saturated at r_min and clipped past it, so it
+    rendered as a box -> flare -> box with square sides rather than a cone.)
+    """
+    reach = min(reach, topdown_half)   # FIXED distance, both directions; ego_speed unused
+    slope = np.tan(np.deg2rad(half_angle_deg))
+
+    rows = np.arange(size, dtype=float)
+    cols = np.arange(size, dtype=float)
+    col_g, row_g = np.meshgrid(cols, rows)
+    px_x = topdown_half * (1.0 - 2.0 * row_g / size)   # longitudinal (row 0 = max fwd)
+    px_y = topdown_half * (2.0 * col_g / size - 1.0)   # left/right
+
+    hw = base_half + slope * np.abs(px_x)              # linear fan -> straight cone sides
+    return (np.abs(px_x) <= reach) & (np.abs(px_y) <= hw)   # forward + reverse lobes
+
+
 def render_ego_bev(obstacles, ego_xy, ego_yaw,
                    x_range=(-5.0, 25.0), y_range=(-10.0, 10.0),
                    resolution=0.25, **snapshot_kw):
@@ -291,10 +337,59 @@ def render_ego_bev_image(obstacles, ego_xy, ego_yaw,
     return colorize(fwd, colormap=True)        # original JET
 
 
+def static_obstacle_mask(boxes_ego, size, topdown_half,
+                         ego_inflate=STATIC_EGO_INFLATE_M,
+                         speed_eps=STATIC_SPEED_EPS):
+    """Ego-frame static boxes -> boolean cut-out mask on the size×size forward-up
+    grid, in the SAME image convention as reachable_cone_mask (row 0 = max
+    forward, col 0 = physical left). True where a parked car sits, so the caller
+    can punch a hole in the heatmap there and let it flow around the car.
+
+    boxes_ego: list of {'position':[x_fwd,y_lat,...], 'extent':[ex,ey,...],
+    'yaw':rad_rel_ego, 'speed':m/s, 'class':...} -- exactly what save_boxes
+    writes (ego frame via inverse_conversion_2d == world_to_ego). Only boxes
+    with speed < speed_eps are used (parked cars). Footprints are inflated by
+    the ego half-width (Minkowski) so the hole reflects where the ego centre
+    could not go; set ego_inflate=0 for the bare car footprint.
+    """
+    px_per_m = size / (2.0 * topdown_half)
+
+    def to_rc(x_fwd, y_lat):
+        # Inverse of reachable_cone_mask's px_x/px_y mapping.
+        row = (size / 2.0) * (1.0 - x_fwd / topdown_half)
+        col = (size / 2.0) * (y_lat / topdown_half + 1.0)
+        return col, row   # cv2 fillPoly wants (x=col, y=row)
+
+    obs = np.zeros((size, size), dtype=np.uint8)
+    for b in (boxes_ego or []):
+        if float(b.get('speed', 0.0)) >= speed_eps:
+            continue
+        bx, by = float(b['position'][0]), float(b['position'][1])
+        ex, ey = float(b['extent'][0]), float(b['extent'][1])
+        yaw = float(b.get('yaw', 0.0))
+        c, s = np.cos(yaw), np.sin(yaw)
+        pts = []
+        for sx, sy in ((+ex, +ey), (+ex, -ey), (-ex, -ey), (-ex, +ey)):
+            # box-local corner -> ego frame -> image (col,row)
+            pts.append(to_rc(bx + c * sx - s * sy, by + s * sx + c * sy))
+        cv2.fillConvexPoly(obs, np.round(pts).astype(np.int32), 255)
+
+    if not obs.any():
+        return np.zeros((size, size), bool)
+
+    rad = int(round(ego_inflate * px_per_m))
+    if rad > 0:                            # Minkowski-inflate by the ego half-width
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rad + 1, 2 * rad + 1))
+        obs = cv2.dilate(obs, k)
+    return obs > 0
+
+
 def render_route_risk_grid(obstacles, ego_xy, ego_yaw, route_pts,
                            size, topdown_half, corridor_half_width,
                            resolution=1.0, horizon_scale=HORIZON_SCALE,
-                           corridor_floor=CORRIDOR_SAFE_FLOOR):
+                           corridor_floor=CORRIDOR_SAFE_FLOOR,
+                           window='corridor', ego_speed=0.0,
+                           static_boxes=None):
     """Coarse (size x size uint8) risk grid, nearest-upscaled, clipped to the
     route corridor -- the exact rendering used for both the saved heatmap/
     PNGs (collect_data_topdown.py) and the live inference overlay
@@ -319,13 +414,27 @@ def render_route_risk_grid(obstacles, ego_xy, ego_yaw, route_pts,
     else:
         arr = np.zeros((size, size), dtype=np.uint8)
 
-    if route_pts and len(route_pts) >= 2:
+    if window == 'cone':
+        mask = reachable_cone_mask(ego_speed, topdown_half, size)
+    elif route_pts and len(route_pts) >= 2:
         heatmap_route = clip_route_to_bumper(route_pts)
-        corridor = route_corridor_mask(heatmap_route, corridor_half_width, topdown_half, size)
-        arr[~corridor] = 0
+        mask = route_corridor_mask(heatmap_route, corridor_half_width, topdown_half, size)
+    else:
+        mask = None
+
+    if mask is not None:
+        arr[~mask] = 0
         floor = int(round(corridor_floor * 255))
         if floor > 0:
-            arr[corridor & (arr < floor)] = floor
+            arr[mask & (arr < floor)] = floor
+
+    # Static obstacles (parked cars): punch a hole in the heatmap at each parked
+    # car so it flows AROUND them instead of painting over them. Applied last so
+    # it overrides the floor; carved cells go to 0 (untinted, like outside the
+    # window) -- no risk colour added for static cars, just a cut-out.
+    if static_boxes:
+        cutout = static_obstacle_mask(static_boxes, size, topdown_half)
+        arr[cutout] = 0
     return arr
 
 

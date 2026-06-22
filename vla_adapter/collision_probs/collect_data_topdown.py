@@ -46,7 +46,8 @@ from collect_data import (
 from crossing_gmm import render_route_risk_grid, heatmap_on_topdown
 from config import (HORIZON_SCALE as HEATMAP_HORIZON,
                     ROUTE_CORRIDOR_HALF_WIDTH,
-                    TOPDOWN_HEIGHT, TOPDOWN_SIZE, TOPDOWN_FOV)
+                    TOPDOWN_HEIGHT, TOPDOWN_SIZE, TOPDOWN_FOV, RISK_GRID_SIZE,
+                    STATIC_OBSTACLES_ENABLED, KEEP_TOPDOWN_BASE)
 
 TOPDOWN_HALF = TOPDOWN_HEIGHT * np.tan(np.deg2rad(TOPDOWN_FOV / 2.0))
 TOPDOWN_RES  = 1.0
@@ -158,12 +159,36 @@ def _compute_heatmaps(save_path, obstacles_gmm_base, n_frames):
         ego_xy = mat[:2, 3]
         yaw    = float(np.arctan2(mat[1, 0], mat[0, 0]))
 
+        # Static parked-car boxes (ego frame) for this frame, so the heatmap
+        # curves around them. Shared with heatmap_agent (built live there).
+        static_boxes = None
+        if STATIC_OBSTACLES_ENABLED:
+            box_path = save_path / 'boxes' / f'{i:04d}.json.gz'
+            if box_path.exists():
+                with gzip.open(box_path, 'rt') as bf:
+                    static_boxes = [b for b in ujson.load(bf)
+                                    if b.get('class') == 'car']
+
         # Shared with heatmap_agent._render_risk so offline == live heatmaps.
         arr = render_route_risk_grid(
             obstacles, ego_xy, yaw, m.get('route') or None,
             TOPDOWN_SIZE, TOPDOWN_HALF, ROUTE_CORRIDOR_HALF_WIDTH,
-            resolution=TOPDOWN_RES, horizon_scale=HEATMAP_HORIZON)
+            resolution=TOPDOWN_RES, horizon_scale=HEATMAP_HORIZON,
+            window='cone', ego_speed=float(m.get('speed', 0.0)),
+            static_boxes=static_boxes)
         Image.fromarray(arr).save(hm_dir / f'{i:04d}.png')
+
+        # COLLISION-LOSS: un-masked obstacle risk grid for the training collision
+        # loss (route_pts=None + default window => no cone/corridor clip). Sampled
+        # under the predicted waypoints in DrivingAdaptor.compute_loss. DYNAMIC
+        # obstacles only -- no static_boxes here, so parked cars don't carve holes
+        # into (or otherwise touch) the loss teacher; the loss is dynamic-only.
+        risk_full = render_route_risk_grid(
+            obstacles, ego_xy, yaw, None,
+            RISK_GRID_SIZE, TOPDOWN_HALF, ROUTE_CORRIDOR_HALF_WIDTH,
+            resolution=TOPDOWN_RES, horizon_scale=HEATMAP_HORIZON)
+        (save_path / 'risk_grid').mkdir(exist_ok=True)
+        Image.fromarray(risk_full).save(save_path / 'risk_grid' / f'{i:04d}.png')
 
         # Save the topdown collision-heatmap view (BEV camera + colorized risk
         # overlay) that SimLingo consumes as a SECOND image tile alongside the
@@ -176,10 +201,13 @@ def _compute_heatmaps(save_path, obstacles_gmm_base, n_frames):
 
     print(" done")
 
-    # topdown/ and heatmap/ are only intermediate inputs to the overlay above;
-    # the dataloader reads topdown_heatmap/ exclusively, so don't keep them.
+    # heatmap/ (grayscale) is a cheap-to-recompute intermediate -- always drop it.
     shutil.rmtree(hm_dir, ignore_errors=True)
-    shutil.rmtree(save_path / 'topdown', ignore_errors=True)
+    # topdown/ (clean BEV) is the only NON-regenerable overlay input. Keep it so
+    # rebake.py can rebuild topdown_heatmap/ offline for any heatmap change (no
+    # re-collection); drop it only if rebake-friendly storage is disabled.
+    if not KEEP_TOPDOWN_BASE:
+        shutil.rmtree(save_path / 'topdown', ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

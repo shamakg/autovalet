@@ -12,9 +12,9 @@ Public API
 import numpy as np
 from typing import Optional
 import sys
-sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet')
-sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter')
-sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/nuplan-devkit')
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet')
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter')
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter/nuplan-devkit')
 
 from utils.coord_utils import carla_transform_to_standard
 from parking_position import parking_vehicle_locations_Town04

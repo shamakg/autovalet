@@ -2,7 +2,7 @@
 a forward pass, print predicted route + speed_wps next to the ground-truth labels.
 
 Usage:
-    cd /home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo
+    cd /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo
     python ../finetune/diagnose_ckpt.py <ckpt_path>
 
 ckpt_path can be either a flat .pt file or a deepspeed checkpoint directory.

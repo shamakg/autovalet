@@ -1,5 +1,5 @@
 import sys
-sys.path.insert(0, '/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo')
+sys.path.insert(0, '/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo')
 from team_code.agent_simlingo import LingoAgent
 from team_code.nav_planner import RoutePlanner, _get_latlon_ref, _location_to_gps
 from agents.navigation.local_planner import RoadOption
@@ -13,7 +13,7 @@ import torch
 import json
 from v2 import CarlaGnssSensor, CarlaTimeSensor, CarlaCollisionSensor, TrajectoryPoint, Direction, refine_trajectory, CarlaCar
 from team_code.transfuser_utils import inverse_conversion_2d, preprocess_compass
-save_dir = "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/results/save_trajectory"
+save_dir = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/results/save_trajectory"
 
 
 #### IMPORTANT: THIS must be run with the Lincoln blueprint

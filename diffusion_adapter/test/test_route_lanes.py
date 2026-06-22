@@ -9,7 +9,7 @@ This file contains tightly-scoped tests — no model, no GPU, no CARLA.
 Coord-transform functions are inlined to avoid the torch import chain.
 
 Run from the diffusion_adapter directory:
-    cd /home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter
+    cd /home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/diffusion_adapter
     python test/test_route_lanes.py
 """
 

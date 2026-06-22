@@ -27,9 +27,9 @@ from pytorch_lightning.utilities import move_data_to_device
 from transformers import AutoProcessor
 
 NUM_BATCHES = 3
-OUTPUT_DIR = Path("/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune/outputs/sanity_check")
+OUTPUT_DIR = Path("/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/finetune/outputs/sanity_check")
 # Update this path to point to the checkpoint you want to test
-CHECKPOINT = "/home/shamakg/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/outputs/2026_05_24_23_44_22_parking_ft_v2/checkpoints/epoch=004.ckpt"
+CHECKPOINT = "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/outputs/2026_05_24_23_44_22_parking_ft_v2/checkpoints/epoch=004.ckpt"
 
 
 @hydra.main(config_path="../simlingo/simlingo_training/config", config_name="config", version_base="1.1")

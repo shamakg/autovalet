@@ -5,7 +5,7 @@ No CARLA, no model, no GPU needed.
 Requires nuplan-devkit to be on the path (same as test_model_smoke.py).
 
 Run with:
-    /home/shamakg/envs/simlingo/bin/python test/test_agent_pipeline.py
+    /home/sumesh/envs/simlingo/bin/python test/test_agent_pipeline.py
 """
 
 import sys, os
