@@ -75,7 +75,7 @@ NETWORK_SEND_LATENCIES = [latency // IMAGE_DOWNSIZE for latency in NETWORK_SEND_
 # ---------------------------------------------------------------
 
 _DEFAULT_CHECKPOINT = (
-      "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/outputs/2026_06_20_19_37_38_parking_ft_v2/checkpoints/last_fp32.pt"
+      "/home/sumesh/carla_garage/leaderboard/leaderboard/autovalet/vla_adapter/simlingo/outputs/2026_06_22_03_27_11_parking_ft_v2/checkpoints/last_fp32.pt"
 )
 # ---------------------------------------------------------------
 # ---------------------------------------------------------------
